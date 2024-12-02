@@ -50,6 +50,54 @@ void serve_file(int, const char *);
 int startup(u_short *);
 void unimplemented(int);
 
+void send_response(int client, const char *status) {
+    char buf[1024];
+    sprintf(buf, "HTTP/1.1 %s\r\nContent-Length: 0\r\n\r\n", status);
+    send(client, buf, strlen(buf), 0);
+}
+
+void handle_put(int client, const char *filepath) {
+  printf("Method: PUT %s\n", filepath);
+
+  int numchars;
+  int content_length;
+  char buf[1024];
+
+  // 获取header其他部分
+  numchars = get_line(client, buf, sizeof(buf));
+  //这个循环的目的是读出指示 body 长度大小的参数，并记录 body 的长度大小。其余的 header 里面的参数一律忽略
+  //注意这里只读完 header 的内容，body 的内容没有读
+  while ((numchars > 0) && strcmp("\n", buf))
+  {
+   buf[15] = '\0';
+   if (strcasecmp(buf, "Content-Length:") == 0)
+    content_length = atoi(&(buf[16])); //记录 body 的长度大小
+   numchars = get_line(client, buf, sizeof(buf));
+  }
+  
+  //如果 http 请求的 header 没有指示 body 长度大小的参数，则报错返回
+  if (content_length == -1) {
+   bad_request(client);
+   return;
+  }
+
+  printf("Content-Length:%d\n", content_length);
+
+  FILE *file = fopen(filepath, "wb");
+  if (file == NULL) {
+      send_response(client, "500 Internal Server Error");
+      return;
+  }
+
+  while (content_length > 0 && (numchars = recv(client, buf, sizeof(buf) -1, 0)) > 0) {
+      buf[numchars] = '\0';  // Ensure null-terminated string
+      fwrite(buf, 1, numchars, file);
+      content_length -= numchars;
+  }
+  fclose(file);
+  send_response(client, "201 Created");
+}
+
 /**********************************************************************/
 /* A request has caused a call to accept() on the server port to
  * return.  Process the request appropriately.
@@ -67,6 +115,7 @@ void accept_request(int client)
  int cgi = 0;      /* becomes true if server decides this is a CGI
                     * program */
  char *query_string = NULL;
+ int check_exist = 0;
 
  //读http 请求的第一行数据（request line），把请求方法存进 method 中
  numchars = get_line(client, buf, sizeof(buf));
@@ -79,15 +128,17 @@ void accept_request(int client)
  method[i] = '\0';
 
  //如果请求的方法不是 GET 或 POST 任意一个的话就直接发送 response 告诉客户端没实现该方法
- if (strcasecmp(method, "GET") && strcasecmp(method, "POST"))
+ if (strcasecmp(method, "GET") && strcasecmp(method, "POST") && strcasecmp(method, "PUT"))
  {
   unimplemented(client);
   return;
  }
 
  //如果是 POST 方法就将 cgi 标志变量置一(true)
- if (strcasecmp(method, "POST") == 0)
+ if (strcasecmp(method, "POST") == 0) {
+  check_exist = 1;
   cgi = 1;
+ }
 
  i = 0;
  //跳过所有的空白字符(空格)
@@ -105,6 +156,8 @@ void accept_request(int client)
  //如果这个请求是一个 GET 方法的话
  if (strcasecmp(method, "GET") == 0)
  {
+  check_exist = 1;
+
   //用一个指针指向 url
   query_string = url;
   
@@ -132,7 +185,7 @@ void accept_request(int client)
   strcat(path, "index.html");
  
  //在系统上去查询该文件是否存在
- if (stat(path, &st) == -1) {
+ if (stat(path, &st) == -1 && check_exist) {
   //如果不存在，那把这次 http 的请求后续的内容(head 和 body)全部读完并忽略
   while ((numchars > 0) && strcmp("\n", buf))  /* read & discard headers */
    numchars = get_line(client, buf, sizeof(buf));
@@ -154,14 +207,20 @@ void accept_request(int client)
    //如果这个文件是一个可执行文件，不论是属于用户/组/其他这三者类型的，就将 cgi 标志变量置一
    cgi = 1;
    
-  if (!cgi)
-   //如果不需要 cgi 机制的话，
-   serve_file(client, path);
+  if (!cgi) {
+    if (strcasecmp(method, "GET") == 0)
+      //如果不需要 cgi 机制的话，
+      serve_file(client, path);
+    else if (strcasecmp(method, "PUT") == 0)
+      //如果不需要 cgi 机制的话，
+      handle_put(client, path);
+  }
   else
    //如果需要则调用
    execute_cgi(client, path, method, query_string);
  }
-
+ // disconnect first
+  shutdown(client, SHUT_RDWR);
  close(client);
 }
 
@@ -573,7 +632,7 @@ void unimplemented(int client)
 int main(void)
 {
  int server_sock = -1;
- u_short port = 0;
+ u_short port = 8080;
  int client_sock = -1;
  //sockaddr_in 是 IPV4的套接字地址结构。定义在<netinet/in.h>,参读《TLPI》P1202
  struct sockaddr_in client_name;
