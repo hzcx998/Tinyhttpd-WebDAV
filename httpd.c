@@ -327,18 +327,75 @@ static int propfind_dir(int client, char *response, int response_len, const char
   return offset;
 }
 
+const char *parse_depth_header(const char *header) {
+    if (header && strstr(header, "Depth:")) {
+        // Depth: 0/1/infinity
+        const char *depth = strstr(header, "Depth:") + 7;
+        if (strncmp(depth, "0", 1) == 0) {
+            return "0";
+        } else if (strncmp(depth, "1", 1) == 0) {
+            return "1";
+        } else if (strncmp(depth, "infinity", 8) == 0) {
+            return "infinity";
+        }
+    }
+    return "infinity";  // 默认值
+}
+
 void handle_propfind(int client, const char *filepath) {
     struct stat file_stat;
     char response[4096];
 
     printf("Method: PROPFIND %s\n", filepath);
 
+    /* 获取参数 */
+    int numchars;
+    const char *depth = "infinity";
+    char buf[1024];
+
+    // 获取header其他部分
+    numchars = get_line(client, buf, sizeof(buf));
+    //这个循环的目的是读出指示 body 长度大小的参数，并记录 body 的长度大小。其余的 header 里面的参数一律忽略
+    //注意这里只读完 header 的内容，body 的内容没有读
+    while ((numchars > 0) && strcmp("\n", buf))
+    {
+        if (strncasecmp(buf, "Depth:", 6) == 0) {
+            depth = parse_depth_header(buf); //记录 depth长度
+        }
+        numchars = get_line(client, buf, sizeof(buf));
+    }
+    
+    //如果 http 请求的 header 没有指示 body 长度大小的参数，则报错返回
+    if (strcmp(depth, "infinity") == 0) {
+        printf("Depth:%s not support\n", depth);
+
+        snprintf(buf, 1024, "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                    "<D:multistatus xmlns:D=\"DAV:\">\n"
+                    "  <D:response>\n"
+                    "    <D:href>%s</D:href>\n"
+                    "    <D:propstat>\n"
+                    "      <D:prop>\n"
+                    "        <D:resourcetype><D:collection/></D:resourcetype>\n"
+                    "      </D:prop>\n"
+                    "      <D:status>HTTP/1.1 403 Forbidden</D:status>\n"
+                    "    </D:propstat>\n"
+                    "  </D:response>\n"
+                    "  <D:error>\n"
+                    "    <D:cannot-modify-property />\n"
+                    "  </D:error>\n"
+                    "</D:multistatus>\n", filepath);
+
+        send_response(client, "403 Forbidden", "application/xml; charset=\"utf-8\"", buf);
+        return;
+    }
+
     if (stat(filepath, &file_stat) == -1) {
         send_response(client, "404 Not Found", "text/plain", "File not found");
         return;
     }
 
-    if (S_ISDIR(file_stat.st_mode)) {
+    // 只有depth为1才返回目录，不然依然返回文件信息
+    if (S_ISDIR(file_stat.st_mode) && strcmp(depth, "1") == 0) {
       if (propfind_dir(client, response, sizeof(response), filepath) == -1)
         return;
     } else {
