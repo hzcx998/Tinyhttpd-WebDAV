@@ -348,6 +348,79 @@ void handle_propfind(int client, const char *filepath) {
     send_response(client, "207 Multi-Status", "application/xml", response);
 }
 
+// 递归删除目录及其所有内容
+int remove_directory(const char *path) {
+    DIR *dir;
+    struct dirent *entry;
+    struct stat statbuf;
+    char full_path[1024];
+
+    if ((dir = opendir(path)) == NULL) {
+        return -1; // 打开目录失败
+    }
+
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue; // 跳过 "." 和 ".."
+        }
+
+        snprintf(full_path, sizeof(full_path), "%s/%s", path, entry->d_name);
+
+        if (stat(full_path, &statbuf) == -1) {
+            closedir(dir);
+            return -1; // 获取状态失败
+        }
+
+        if (S_ISDIR(statbuf.st_mode)) {
+            // 递归删除子目录
+            if (remove_directory(full_path) == -1) {
+                closedir(dir);
+                return -1; // 子目录删除失败
+            }
+        } else {
+            // 删除文件
+            if (remove(full_path) == -1) {
+                closedir(dir);
+                return -1; // 文件删除失败
+            }
+        }
+    }
+
+    closedir(dir);
+
+    // 删除空目录
+    return rmdir(path);
+}
+
+void handle_delete(int client, const char *path) {
+    struct stat statbuf;
+
+    printf("Method: DELETE %s\n", path);
+
+    if (stat(path, &statbuf) == -1) {
+        // 文件或目录不存在
+        send_response(client, "404 Not Found", "text/plain", "File not found");
+        return;
+    }
+
+    if (S_ISDIR(statbuf.st_mode)) {
+        // 删除目录
+        if (remove_directory(path) == -1) {
+            send_response(client, "500 Internal Server Error", "text/plain", "Remove directory failed");
+            return;
+        }
+    } else {
+        // 删除文件
+        if (remove(path) == -1) {
+            send_response(client, "500 Internal Server Error", "text/plain", "Remove file failed");
+            return;
+        }
+    }
+
+    // 删除成功
+    send_response(client, "204 No Content", "text/plain", "Success to delete resource");
+}
+
 /**********************************************************************/
 /* A request has caused a call to accept() on the server port to
  * return.  Process the request appropriately.
@@ -379,7 +452,7 @@ void accept_request(int client)
 
  //如果请求的方法不是 GET 或 POST 任意一个的话就直接发送 response 告诉客户端没实现该方法
  if (strcasecmp(method, "GET") && strcasecmp(method, "POST") && strcasecmp(method, "PUT") && 
-    strcasecmp(method, "PROPFIND"))
+    strcasecmp(method, "PROPFIND") && strcasecmp(method, "DELETE"))
  {
   unimplemented(client);
   return;
@@ -428,6 +501,11 @@ void accept_request(int client)
   }
  }
 
+ if (strcasecmp(method, "DELETE") == 0)
+ {
+    check_exist = 1;
+ }
+
  //将前面分隔两份的前面那份字符串，拼接在字符串htdocs的后面之后就输出存储到数组 path 中。相当于现在 path 中存储着一个字符串
  sprintf(path, "%s%s", prefix_dir, url);
  
@@ -465,6 +543,8 @@ void accept_request(int client)
     handle_put(client, path);
   } else if (strcasecmp(method, "PROPFIND") == 0) {
     handle_propfind(client, path);
+  } else if (strcasecmp(method, "DELETE") == 0) {
+    handle_delete(client, path);
   } else if (cgi) {
     //如果需要则调用
     execute_cgi(client, path, method, query_string);
