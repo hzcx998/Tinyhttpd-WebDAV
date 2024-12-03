@@ -32,6 +32,9 @@
 //#include <pthread.h>
 #include <sys/wait.h>
 #include <stdlib.h>
+#include <time.h>
+#include <dirent.h>
+#include <signal.h>
 
 #define ISspace(x) isspace((int)(x))
 
@@ -50,10 +53,22 @@ void serve_file(int, const char *);
 int startup(u_short *);
 void unimplemented(int);
 
-void send_response(int client, const char *status) {
-    char buf[1024];
-    sprintf(buf, "HTTP/1.1 %s\r\nContent-Length: 0\r\n\r\n", status);
-    send(client, buf, strlen(buf), 0);
+char *prefix_dir = "htdocs";
+
+// append index.html
+int append_index = 0;
+
+// 发送HTTP响应
+void send_response(int client, const char *status, const char *content_type, const char *body) {
+    char header[1024];
+    sprintf(header,
+        "HTTP/1.1 %s\r\n"
+        "Content-Type: %s\r\n"
+        "Content-Length: %lu\r\n"
+        "Connection: close\r\n\r\n",
+        status, content_type, strlen(body));
+    send(client, header, strlen(header), 0);
+    send(client, body, strlen(body), 0);
 }
 
 void handle_put(int client, const char *filepath) {
@@ -85,7 +100,7 @@ void handle_put(int client, const char *filepath) {
 
   FILE *file = fopen(filepath, "wb");
   if (file == NULL) {
-      send_response(client, "500 Internal Server Error");
+      send_response(client, "500 Internal Server Error", "text/plain", "Failed to open file");
       return;
   }
 
@@ -95,7 +110,242 @@ void handle_put(int client, const char *filepath) {
       content_length -= numchars;
   }
   fclose(file);
-  send_response(client, "201 Created");
+  send_response(client, "201 Created", "text/plain", "Success to creat file");
+}
+
+void format_time(time_t t, char *buf, size_t len) {
+    struct tm *tm_info;
+
+    // 使用 gmtime 或 localtime，这里我们使用 gmtime
+    tm_info = gmtime(&t);
+
+    if (tm_info == NULL) {
+        // 处理错误情况
+        snprintf(buf, len, "Invalid time");
+        return;
+    }
+
+    // 使用 strftime 格式化时间
+    if (strftime(buf, len, "%a, %d %b %Y %H:%M:%S GMT", tm_info) == 0) {
+        // 处理错误情况
+        snprintf(buf, len, "Failed to format time");
+    }
+
+}
+
+// 定义MIME类型映射表
+typedef struct {
+    const char *extension;
+    const char *mime_type;
+} MimeMap;
+
+// 预定义一些常见的MIME类型
+static const MimeMap mime_types[] = {
+    {".html", "text/html"},
+    {".txt", "text/plain"},
+    {".jpg", "image/jpeg"},
+    {".jpeg", "image/jpeg"},
+    {".png", "image/png"},
+    {".gif", "image/gif"},
+    {".css", "text/css"},
+    {".js", "application/javascript"},
+    // 添加更多MIME类型映射...
+    {NULL, NULL}  // 表结束标志
+};
+
+// 根据文件扩展名获取MIME类型
+void get_mime_type_by_extension(const char *filename, char *buf, size_t buf_size) {
+    const char *ext = strrchr(filename, '.');
+    if (!ext) {
+        strncpy(buf, "application/octet-stream", buf_size);  // 未知类型默认值
+        buf[buf_size - 1] = '\0';  // 确保字符串以 NULL 结尾
+        return;
+    }
+
+    for (int i = 0; mime_types[i].extension != NULL; ++i) {
+        if (strcmp(ext, mime_types[i].extension) == 0) {
+            strncpy(buf, mime_types[i].mime_type, buf_size);
+            buf[buf_size - 1] = '\0';  // 确保字符串以 NULL 结尾
+            return;
+        }
+    }
+
+    strncpy(buf, "application/octet-stream", buf_size);  // 未找到匹配的扩展名
+    buf[buf_size - 1] = '\0';  // 确保字符串以 NULL 结尾
+}
+
+// 根据目录路径获取MIME类型
+void get_mime_type_for_directory(const char *path, char *buf, size_t buf_size) {
+    struct stat statbuf;
+    if (stat(path, &statbuf) == 0 && S_ISDIR(statbuf.st_mode)) {
+        strncpy(buf, "httpd/unix-directory", buf_size);  // 目录的MIME类型
+        buf[buf_size - 1] = '\0';  // 确保字符串以 NULL 结尾
+    }
+}
+
+// 根据文件路径获取MIME类型
+void get_mime_type(const char *filepath, char *buf, size_t buf_size) {
+    char mime_type[256];
+    get_mime_type_for_directory(filepath, buf, buf_size);
+    if (strcmp(buf, "httpd/unix-directory") == 0) {
+        return;  // 返回目录的MIME类型
+    }
+
+    get_mime_type_by_extension(filepath, mime_type, sizeof(mime_type));
+    strncpy(buf, mime_type, buf_size);
+    buf[buf_size - 1] = '\0';  // 确保字符串以 NULL 结尾
+}
+
+int generate_propfind_response_body(struct stat *statbuf, char *xml_response, int response_len, int offset, const char *path) {
+
+  // 添加资源类型、创建日期、最后修改日期、ETag等属性
+  char time_buffer[256];
+  format_time(statbuf->st_mtime, time_buffer, sizeof(time_buffer));
+  offset += snprintf(xml_response + offset, response_len - offset,
+                      "<D:response>\n"
+                      "<D:href>%s</D:href>\n"
+                      "<D:propstat>\n"
+                      "<D:prop>\n",
+                      (path)); // 跳过路径的第一个字符，通常是 /
+
+  // 检查是否是目录
+  if (S_ISDIR(statbuf->st_mode)) {
+      offset += snprintf(xml_response + offset, response_len - offset,
+                          "<D:resourcetype><D:collection/></D:resourcetype>\n");
+  } else {
+      // 文件的resourcetype为空
+      offset += snprintf(xml_response + offset, response_len - offset, "<D:resourcetype/>\n");
+  }
+
+  offset += snprintf(xml_response + offset, response_len - offset,
+                      "<D:creationdate>%s</D:creationdate>\n"
+                      "<D:getlastmodified>%s</D:getlastmodified>\n"
+                      "<D:getetag>\"%lx-%lx\"</D:getetag>\n",
+                      ctime(&statbuf->st_ctime), // 创建时间
+                      time_buffer, // 最后修改时间
+                      statbuf->st_ino, // ETag第一部分：inode
+                      (unsigned long)statbuf->st_size); // ETag第二部分：文件大小
+
+  // 添加文件大小
+  offset += snprintf(xml_response + offset, response_len - offset,
+                   "<D:getcontentlength>%ld</D:getcontentlength>\n",
+                   (long)statbuf->st_size);
+
+  // 添加锁支持
+  offset += snprintf(xml_response + offset, response_len - offset,
+                      "<D:supportedlock>\n"
+                      "<D:lockentry>\n"
+                      "<D:lockscope><D:exclusive/></D:lockscope>\n"
+                      "<D:locktype><D:write/></D:locktype>\n"
+                      "</D:lockentry>\n"
+                      "<D:lockentry>\n"
+                      "<D:lockscope><D:shared/></D:lockscope>\n"
+                      "<D:locktype><D:write/></D:locktype>\n"
+                      "</D:lockentry>\n"
+                      "</D:supportedlock>\n"
+                      "<D:lockdiscovery/>\n");
+
+  // 添加内容类型
+  char mime_type[256];
+  get_mime_type(path, mime_type, sizeof(mime_type)); // 假设有一个函数来获取MIME类型
+  offset += snprintf(xml_response + offset, response_len - offset,
+                      "<D:getcontenttype>%s</D:getcontenttype>\n",
+                      mime_type);
+
+  // 结束prop和propstat元素
+  offset += snprintf(xml_response + offset, response_len - offset,
+                      "</D:prop>\n"
+                      "<D:status>HTTP/1.1 200 OK</D:status>\n"
+                      "</D:propstat>\n"
+                      "</D:response>\n");
+
+    return offset;
+}
+
+// 假设有一个函数来获取文件或目录的属性
+int generate_propfind_response(char *xml_response, int response_len, const char *path) {
+  struct stat statbuf;
+  int offset = 0;
+
+  if (stat(path, &statbuf) == -1) {
+    return -1; 
+  }
+
+  // 添加响应头
+  offset += snprintf(xml_response, response_len,
+                      "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                      "<D:multistatus xmlns:D=\"DAV:\">\n");
+
+  offset = generate_propfind_response_body(&statbuf, xml_response, response_len, offset, path);
+
+  // 结束multistatus元素
+  offset += snprintf(xml_response + offset, response_len,
+                      "</D:multistatus>\n");
+
+  return offset;
+}
+
+static int propfind_dir(int client, char *response, int response_len, const char *filepath)
+{
+  DIR *dir;
+  struct dirent *entry;
+  char entry_path[1024];
+  char mtime[64];
+  int offset = 0;
+  struct stat statbuf;
+
+  dir = opendir(filepath);
+  if (dir == NULL) {
+      send_response(client, "500 Internal Server Error", "text/plain", "Failed to open directory");
+      return -1;
+  }
+
+  // 其他XML部分...
+  offset += sprintf(response, "<?xml version=\"1.0\" encoding=\"utf-8\" ?>\n<D:multistatus xmlns:D=\"DAV:\">\n");
+
+  while ((entry = readdir(dir)) != NULL) {
+      // 跳过 "." 和 ".."
+      if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+          continue;
+      }
+
+      // 构建完整的文件路径
+      snprintf(entry_path, sizeof(entry_path), "%s/%s", filepath, entry->d_name);
+
+      if (stat(entry_path, &statbuf) == -1) {
+        return -1; 
+      }
+
+      // 获取文件状态
+      offset = generate_propfind_response_body(&statbuf, response, response_len, offset, entry_path);
+  }
+
+  offset += sprintf(response + offset, "</D:multistatus>");
+
+  closedir(dir);
+
+  return offset;
+}
+
+void handle_propfind(int client, const char *filepath) {
+    struct stat file_stat;
+    char response[4096];
+
+    printf("Method: PROPFIND %s\n", filepath);
+
+    if (stat(filepath, &file_stat) == -1) {
+        send_response(client, "404 Not Found", "text/plain", "File not found");
+        return;
+    }
+
+    if (S_ISDIR(file_stat.st_mode)) {
+      if (propfind_dir(client, response, sizeof(response), filepath) == -1)
+        return;
+    } else {
+      generate_propfind_response(response, sizeof(response), filepath);
+    }
+
+    send_response(client, "207 Multi-Status", "application/xml", response);
 }
 
 /**********************************************************************/
@@ -128,7 +378,8 @@ void accept_request(int client)
  method[i] = '\0';
 
  //如果请求的方法不是 GET 或 POST 任意一个的话就直接发送 response 告诉客户端没实现该方法
- if (strcasecmp(method, "GET") && strcasecmp(method, "POST") && strcasecmp(method, "PUT"))
+ if (strcasecmp(method, "GET") && strcasecmp(method, "POST") && strcasecmp(method, "PUT") && 
+    strcasecmp(method, "PROPFIND"))
  {
   unimplemented(client);
   return;
@@ -178,10 +429,10 @@ void accept_request(int client)
  }
 
  //将前面分隔两份的前面那份字符串，拼接在字符串htdocs的后面之后就输出存储到数组 path 中。相当于现在 path 中存储着一个字符串
- sprintf(path, "htdocs%s", url);
+ sprintf(path, "%s%s", prefix_dir, url);
  
  //如果 path 数组中的这个字符串的最后一个字符是以字符 / 结尾的话，就拼接上一个"index.html"的字符串。首页的意思
- if (path[strlen(path) - 1] == '/')
+ if (append_index && path[strlen(path) - 1] == '/')
   strcat(path, "index.html");
  
  //在系统上去查询该文件是否存在
@@ -196,28 +447,29 @@ void accept_request(int client)
  {
   //文件存在，那去跟常量S_IFMT相与，相与之后的值可以用来判断该文件是什么类型的
   //S_IFMT参读《TLPI》P281，与下面的三个常量一样是包含在<sys/stat.h>
-  if ((st.st_mode & S_IFMT) == S_IFDIR)  
+  if (append_index && (st.st_mode & S_IFMT) == S_IFDIR)  
    //如果这个文件是个目录，那就需要再在 path 后面拼接一个"/index.html"的字符串
    strcat(path, "/index.html");
    
    //S_IXUSR, S_IXGRP, S_IXOTH三者可以参读《TLPI》P295
   if ((st.st_mode & S_IXUSR) ||       
       (st.st_mode & S_IXGRP) ||
-      (st.st_mode & S_IXOTH)    )
-   //如果这个文件是一个可执行文件，不论是属于用户/组/其他这三者类型的，就将 cgi 标志变量置一
-   cgi = 1;
-   
-  if (!cgi) {
-    if (strcasecmp(method, "GET") == 0)
-      //如果不需要 cgi 机制的话，
-      serve_file(client, path);
-    else if (strcasecmp(method, "PUT") == 0)
-      //如果不需要 cgi 机制的话，
-      handle_put(client, path);
+      (st.st_mode & S_IXOTH)    ) {
+        cgi = 1;
+    //如果这个文件是一个可执行文件，不论是属于用户/组/其他这三者类型的，就将 cgi 标志变量置一
   }
-  else
-   //如果需要则调用
-   execute_cgi(client, path, method, query_string);
+
+  if (strcasecmp(method, "GET") == 0) { //如果不需要 cgi 机制的
+    serve_file(client, path);
+  } else if (strcasecmp(method, "PUT") == 0) {
+    handle_put(client, path);
+  } else if (strcasecmp(method, "PROPFIND") == 0) {
+    handle_propfind(client, path);
+  } else if (cgi) {
+    //如果需要则调用
+    execute_cgi(client, path, method, query_string);
+  }
+
  }
  // disconnect first
   shutdown(client, SHUT_RDWR);
@@ -528,6 +780,8 @@ void serve_file(int client, const char *filename)
  int numchars = 1;
  char buf[1024];
 
+  printf("Method: GET %s\n", filename);
+
  //确保 buf 里面有东西，能进入下面的 while 循环
  buf[0] = 'A'; buf[1] = '\0';
  //循环作用是读取并忽略掉这个 http 请求后面的所有内容
@@ -629,9 +883,20 @@ void unimplemented(int client)
 
 /**********************************************************************/
 
+static int server_sock = -1;
+
+void handle_term(int signo)
+{
+  printf("term httpd sock %d\n", server_sock);
+
+  // close sock before exit
+  shutdown(server_sock, SHUT_RDWR);
+  close(server_sock);
+  exit(0);
+}
+
 int main(void)
 {
- int server_sock = -1;
  u_short port = 8080;
  int client_sock = -1;
  //sockaddr_in 是 IPV4的套接字地址结构。定义在<netinet/in.h>,参读《TLPI》P1202
@@ -641,6 +906,9 @@ int main(void)
 
  server_sock = startup(&port);
  printf("httpd running on port %d\n", port);
+
+  signal(SIGTERM, handle_term);
+  signal(SIGINT, handle_term);
 
  while (1)
  {

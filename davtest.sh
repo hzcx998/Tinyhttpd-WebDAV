@@ -35,7 +35,8 @@ shift  # Remove the command from the arguments list
 
 case "$COMMAND" in
     list)
-        $CURL -u $USERNAME:$PASSWORD -X PROPFIND $WEBDAV_URL -H "Depth: 1"
+        FILE=$1
+        $CURL -u $USERNAME:$PASSWORD -X PROPFIND "$WEBDAV_URL/$(basename "$FILE")" -H "Depth: 1"
         ;;
     upload)
         if [ $# -lt 1 ]; then
