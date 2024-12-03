@@ -35,6 +35,7 @@
 #include <time.h>
 #include <dirent.h>
 #include <signal.h>
+#include <errno.h>
 
 #define ISspace(x) isspace((int)(x))
 
@@ -478,6 +479,30 @@ void handle_delete(int client, const char *path) {
     send_response(client, "204 No Content", "text/plain", "Success to delete resource");
 }
 
+
+int handle_mkcol(int client, const char *path) {
+    
+    printf("Method: MKCOL %s\n", path);
+
+    // 尝试创建目录
+    if (mkdir(path, 0755) == -1) {
+        // 目录创建失败
+        if (errno == EEXIST) {
+            send_response(client, "405 Method Not Allowed", "text/plain", "The resource already exists.");
+        } else if (errno == EACCES || errno == EPERM) {
+            send_response(client, "403 Forbidden", "text/plain", "Permission denied.");
+        } else {
+            char *err_msg = strerror(errno);
+            send_response(client, "500 Internal Server Error", "text/plain", err_msg);
+        }
+        return -1;
+    }
+
+    // 目录创建成功
+    send_response(client, "201 Created", "text/plain", "Collection created successfully.");
+    return 0;
+}
+
 /**********************************************************************/
 /* A request has caused a call to accept() on the server port to
  * return.  Process the request appropriately.
@@ -509,7 +534,7 @@ void accept_request(int client)
 
  //如果请求的方法不是 GET 或 POST 任意一个的话就直接发送 response 告诉客户端没实现该方法
  if (strcasecmp(method, "GET") && strcasecmp(method, "POST") && strcasecmp(method, "PUT") && 
-    strcasecmp(method, "PROPFIND") && strcasecmp(method, "DELETE"))
+    strcasecmp(method, "PROPFIND") && strcasecmp(method, "DELETE") && strcasecmp(method, "MKCOL"))
  {
   unimplemented(client);
   return;
@@ -602,6 +627,8 @@ void accept_request(int client)
     handle_propfind(client, path);
   } else if (strcasecmp(method, "DELETE") == 0) {
     handle_delete(client, path);
+  } else if (strcasecmp(method, "MKCOL") == 0) {
+    handle_mkcol(client, path);
   } else if (cgi) {
     //如果需要则调用
     execute_cgi(client, path, method, query_string);
