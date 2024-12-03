@@ -311,9 +311,11 @@ static int propfind_dir(int client, char *response, int response_len, const char
       }
 
       // 构建完整的文件路径
+      memset(entry_path, 0, sizeof(entry_path));
       snprintf(entry_path, sizeof(entry_path), "%s/%s", filepath, entry->d_name);
 
       if (stat(entry_path, &statbuf) == -1) {
+        closedir(dir);
         return -1; 
       }
 
@@ -345,7 +347,9 @@ const char *parse_depth_header(const char *header) {
 
 void handle_propfind(int client, const char *filepath) {
     struct stat file_stat;
-    char response[4096];
+    // TODO: 需要一个大缓冲区来保存响应报文。后续使用malloc分配
+    static char response[1024 * 32];
+    memset(response, 0, 1024 * 32);
 
     printf("Method: PROPFIND %s\n", filepath);
 
