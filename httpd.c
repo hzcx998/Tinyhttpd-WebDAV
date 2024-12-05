@@ -507,6 +507,90 @@ int handle_mkcol(int client, const char *path) {
     return 0;
 }
 
+#define PARM_MOVE_DEST "Destination:"
+
+int is_remote_url(const char *dest) {
+    // Simple check to see if the destination starts with "http://" or "https://"
+    return strncmp(dest, "http://", 7) == 0 || strncmp(dest, "https://", 8) == 0;
+}
+
+char* extract_path_from_url(const char *url) {
+    // 找到主机名后的第一个 '/' 字符的位置
+    const char *start = strstr(url, "://");
+    if (start) {
+        start += 3; // 跳过 "://"
+        const char *host_end = strchr(start, '/');
+        if (host_end) {
+            // 返回主机名后的第一个 '/' 之后的部分，即路径
+            return (char *)host_end + 1;
+        }
+    }
+    return NULL; // 如果没有找到路径，返回 NULL
+}
+
+const int parse_dest_path(const char *header, char *buf, int buflen) {
+    if (header && strstr(header, PARM_MOVE_DEST)) {
+        char *dest = strstr(header, PARM_MOVE_DEST) + sizeof(PARM_MOVE_DEST);
+        char *path = is_remote_url(dest) ? extract_path_from_url(dest): dest;
+        if (!path)
+            return -1;
+
+        snprintf(buf, buflen, "%s/%s", prefix_dir, path);
+        return 0;
+    }
+    return -1;
+}
+
+int handle_move(int client, const char *path) {
+    
+    printf("Method: MOVE %s\n", path);
+
+    /* 获取参数 */
+    int numchars;
+    char buf[1024];
+    char dest[256] = {0};
+
+    // 获取header其他部分
+    numchars = get_line(client, buf, sizeof(buf));
+    //这个循环的目的是读出指示 body 长度大小的参数，并记录 body 的长度大小。其余的 header 里面的参数一律忽略
+    //注意这里只读完 header 的内容，body 的内容没有读
+    while ((numchars > 0) && strcmp("\n", buf))
+    {
+        if (strncasecmp(buf, PARM_MOVE_DEST, sizeof(PARM_MOVE_DEST)-1) == 0) {
+            // buf 最后一个字符是'\n'，需要剔除
+            buf[strlen(buf) - 1] = '\0';
+            if (parse_dest_path(buf, dest, sizeof(dest))) {
+                printf("MOVE: parse dest path %s faied\n", buf);
+                send_response(client, "400 Bad Request", "text/plain", "Bad destination");
+                return -1;
+            }
+        }
+        memset(buf, 0, sizeof(buf));
+        numchars = get_line(client, buf, sizeof(buf));
+    }
+
+    // 没有目标参数
+    if (dest[0] == '\0') {
+        send_response(client, "400 Bad Request", "text/plain", "No file destination");
+        return -1;
+    }
+
+    // 检查目标文件是否已经存在
+    if (access(dest, F_OK) == 0) {
+        send_response(client, "409 Conflict", "text/plain", "File conflict");
+        return -1;
+    }
+
+    if (rename(path, dest) == 0) {
+        send_response(client, "200 OK", "text/plain", "Move file sucess");
+    } else {
+        send_response(client, "500 Internal Server Error", "text/plain", "Move file failed");
+        return -1;
+    }
+
+    return 0;
+}
+
 /**********************************************************************/
 /* A request has caused a call to accept() on the server port to
  * return.  Process the request appropriately.
@@ -538,7 +622,8 @@ void accept_request(int client)
 
  //如果请求的方法不是 GET 或 POST 任意一个的话就直接发送 response 告诉客户端没实现该方法
  if (strcasecmp(method, "GET") && strcasecmp(method, "POST") && strcasecmp(method, "PUT") && 
-    strcasecmp(method, "PROPFIND") && strcasecmp(method, "DELETE") && strcasecmp(method, "MKCOL"))
+    strcasecmp(method, "PROPFIND") && strcasecmp(method, "DELETE") && strcasecmp(method, "MKCOL") &&
+    strcasecmp(method, "MOVE") && strcasecmp(method, "COPY"))
  {
   unimplemented(client);
   return;
@@ -587,7 +672,8 @@ void accept_request(int client)
   }
  }
 
- if (strcasecmp(method, "DELETE") == 0)
+ if (strcasecmp(method, "DELETE") == 0 || strcasecmp(method, "MOVE") == 0 ||
+    strcasecmp(method, "COPY") == 0)
  {
     check_exist = 1;
  }
@@ -633,6 +719,8 @@ void accept_request(int client)
     handle_delete(client, path);
   } else if (strcasecmp(method, "MKCOL") == 0) {
     handle_mkcol(client, path);
+  } else if (strcasecmp(method, "MOVE") == 0) {
+    handle_move(client, path);
   } else if (cgi) {
     //如果需要则调用
     execute_cgi(client, path, method, query_string);
