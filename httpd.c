@@ -36,6 +36,7 @@
 #include <dirent.h>
 #include <signal.h>
 #include <errno.h>
+#include <sys/fcntl.h>
 
 #define ISspace(x) isspace((int)(x))
 
@@ -591,6 +592,162 @@ int handle_move(int client, const char *path) {
     return 0;
 }
 
+// 递归复制目录
+int copy_directory(const char *src, const char *dest) {
+    DIR *dir;
+    struct dirent *entry;
+    struct stat file_stat;
+    char src_path[512];
+    char dest_path[512];
+    int ret = 0;
+
+    // 打开源目录
+    dir = opendir(src);
+    if (!dir) {
+        return -1;
+    }
+
+    // 创建目标目录
+    if (mkdir(dest, 0755) == -1 && errno != EEXIST) {
+        closedir(dir);
+        return -1;
+    }
+
+    // 遍历目录中的所有文件和子目录
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue; // 跳过当前目录和上级目录
+        }
+
+        snprintf(src_path, sizeof(src_path), "%s/%s", src, entry->d_name);
+        snprintf(dest_path, sizeof(dest_path), "%s/%s", dest, entry->d_name);
+
+        if (lstat(src_path, &file_stat) == -1) {
+            ret = -1;
+            break;
+        }
+
+        if (S_ISDIR(file_stat.st_mode)) {
+            // 递归复制子目录
+            if (copy_directory(src_path, dest_path) == -1) {
+                ret = -1;
+                break;
+            }
+        } else {
+            // 复制文件
+            if (copy_file(src_path, dest_path, file_stat.st_mode) == -1) {
+                ret = -1;
+                break;
+            }
+        }
+    }
+
+    closedir(dir);
+    return ret;
+}
+
+int copy_file(const char *src, const char *dest, mode_t mode) {
+    int src_fd = open(src, O_RDONLY);
+    if (src_fd == -1) {
+        return -1;
+    }
+
+    int dest_fd = open(dest, O_WRONLY | O_CREAT | O_TRUNC, mode);
+    if (dest_fd == -1) {
+        close(src_fd);
+        return -1;
+    }
+
+    char buffer[4096];
+    ssize_t bytes_read;
+    while ((bytes_read = read(src_fd, buffer, sizeof(buffer))) > 0) {
+        if (write(dest_fd, buffer, bytes_read) != bytes_read) {
+            close(src_fd);
+            close(dest_fd);
+            return -1;
+        }
+    }
+
+    if (bytes_read == -1) {
+        close(src_fd);
+        close(dest_fd);
+        return -1;
+    }
+
+    close(src_fd);
+    close(dest_fd);
+    return 0;
+}
+
+int handle_copy(int client, const char *path) {
+    
+    printf("Method: COPY %s\n", path);
+
+    /* 获取参数 */
+    int numchars;
+    char buf[1024];
+    char dest[256] = {0};
+
+    // 获取header其他部分
+    numchars = get_line(client, buf, sizeof(buf));
+    //这个循环的目的是读出指示 body 长度大小的参数，并记录 body 的长度大小。其余的 header 里面的参数一律忽略
+    //注意这里只读完 header 的内容，body 的内容没有读
+    while ((numchars > 0) && strcmp("\n", buf))
+    {
+        if (strncasecmp(buf, PARM_MOVE_DEST, sizeof(PARM_MOVE_DEST)-1) == 0) {
+            // buf 最后一个字符是'\n'，需要剔除
+            buf[strlen(buf) - 1] = '\0';
+            if (parse_dest_path(buf, dest, sizeof(dest))) {
+                printf("MOVE: parse dest path %s faied\n", buf);
+                send_response(client, "400 Bad Request", "text/plain", "Bad destination");
+                return -1;
+            }
+        }
+        memset(buf, 0, sizeof(buf));
+        numchars = get_line(client, buf, sizeof(buf));
+    }
+
+    // 没有目标参数
+    if (dest[0] == '\0') {
+        send_response(client, "400 Bad Request", "text/plain", "No file destination");
+        return -1;
+    }
+
+    // 检查目标文件是否已经存在
+    if (access(dest, F_OK) == 0) {
+        send_response(client, "409 Conflict", "text/plain", "File conflict");
+        return -1;
+    }
+
+    struct stat file_stat;
+    if (stat(path, &file_stat) == -1) {
+        send_response(client, "500 Internal Server Error", "text/plain", "Failed to stat source file");
+        return;
+    }
+
+    if (S_ISDIR(file_stat.st_mode)) {
+        // 如果是目录，递归复制目录
+        if (copy_directory(path, dest) == 0) {
+            // 设置目标目录的权限
+            if (chmod(dest, file_stat.st_mode) == -1) {
+                send_response(client, "500 Internal Server Error", "text/plain", "Failed to set directory permissions");
+                return;
+            }
+            send_response(client, "200 OK", "text/plain", "Directory copied successfully");
+        } else {
+            send_response(client, "500 Internal Server Error", "text/plain", "Failed to copy directory");
+        }
+    } else {
+        // 如果是文件，复制文件
+        if (copy_file(path, dest, file_stat.st_mode) == 0) {
+            send_response(client, "200 OK", "text/plain", "File copied successfully");
+        } else {
+            send_response(client, "500 Internal Server Error", "text/plain", "Failed to copy file");
+        }
+    }
+    return 0;
+}
+
 /**********************************************************************/
 /* A request has caused a call to accept() on the server port to
  * return.  Process the request appropriately.
@@ -721,6 +878,8 @@ void accept_request(int client)
     handle_mkcol(client, path);
   } else if (strcasecmp(method, "MOVE") == 0) {
     handle_move(client, path);
+} else if (strcasecmp(method, "COPY") == 0) {
+    handle_copy(client, path);
   } else if (cgi) {
     //如果需要则调用
     execute_cgi(client, path, method, query_string);
