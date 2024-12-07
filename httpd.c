@@ -73,25 +73,102 @@ void send_response(int client, const char *status, const char *content_type, con
     send(client, body, strlen(body), 0);
 }
 
-void handle_put(int client, const char *filepath) {
+// 检查请求头中是否有某个参数，并将结果保存到 buf 中
+int get_header_value(const char *header, const char *param, char *buf, int buflen) {
+    char *param_str = strstr(header, param);
+    if (param_str) {
+        // 找到参数，解析其值
+        param_str += strlen(param);
+        char *value_start = strchr(param_str, ':');
+        if (value_start) {
+            value_start++; // 跳过冒号
+            while (*value_start == ' ') value_start++; // 跳过空格
+            char *value_end = strchr(value_start, '\n');
+            if (value_end) {
+                int value_len = value_end - value_start;
+                if (value_len < buflen) {
+                    strncpy(buf, value_start, value_len);
+                    buf[value_len] = '\0'; // 确保字符串结束符
+                    return 0; // 成功
+                } else {
+                    return -2; // 缓冲区溢出
+                }
+            }
+        }
+    }
+    return -1; // 未找到参数
+}
+
+#define BUFFER_SIZE 4096
+
+int read_header(int client, char *buf, int len) {
+    int numchars;
+    char line[1024];
+    int total_read = 0;
+
+    // 初始化缓冲区
+    memset(buf, 0, len);
+
+    // 读取请求头
+    while ((numchars = get_line(client, line, sizeof(line))) > 0) {
+        // 将读取的行累积到 buf 中
+        if (total_read + numchars < len) {
+            strcpy(buf + total_read, line);
+            total_read += numchars;
+        } else {
+            // 缓冲区溢出
+            return -1;
+        }
+
+        // 检查是否到达请求头结束（空行）
+        if (strcmp(line, "\n") == 0 || strcmp(line, "") == 0) {
+            break;
+        }
+    }
+
+    // 返回读取的请求头长度
+    return total_read;
+}
+
+int read_body(int client, char *buf, int len, int content_len) {
+    int numchars;
+    char line[1024];
+    int total_read = 0;
+
+    // 初始化缓冲区
+    memset(buf, 0, len);
+
+    // 读取请求头
+    while (content_len > 0 && (numchars = get_line(client, line, sizeof(line))) > 0) {
+        // 将读取的行累积到 buf 中
+        if (total_read + numchars < len) {
+            strcpy(buf + total_read, line);
+            total_read += numchars;
+        } else {
+            // 缓冲区溢出
+            return -1;
+        }
+        content_len -= total_read;
+    }
+
+    // 返回读取的请求头长度
+    return total_read;
+}
+
+
+void handle_put(int client, const char *filepath, char *header) {
   printf("Method: PUT %s\n", filepath);
 
   int numchars;
-  int content_length;
+  int content_length = -1;
   char buf[1024];
 
   // 获取header其他部分
-  numchars = get_line(client, buf, sizeof(buf));
-  //这个循环的目的是读出指示 body 长度大小的参数，并记录 body 的长度大小。其余的 header 里面的参数一律忽略
-  //注意这里只读完 header 的内容，body 的内容没有读
-  while ((numchars > 0) && strcmp("\n", buf))
-  {
-   buf[15] = '\0';
-   if (strcasecmp(buf, "Content-Length:") == 0)
-    content_length = atoi(&(buf[16])); //记录 body 的长度大小
-   numchars = get_line(client, buf, sizeof(buf));
-  }
-  
+    char content_buf[16];
+    if (!get_header_value(header, "Content-Length", content_buf, sizeof(content_buf))) {
+        //如果不存在，那把这次 http 的请求后续的内容(head 和 body)全部读完并忽略
+        content_length = atoi(content_buf); //记录 body 的长度大小
+    }
   //如果 http 请求的 header 没有指示 body 长度大小的参数，则报错返回
   if (content_length == -1) {
    bad_request(client);
@@ -331,22 +408,7 @@ static int propfind_dir(int client, char *response, int response_len, const char
   return offset;
 }
 
-const char *parse_depth_header(const char *header) {
-    if (header && strstr(header, "Depth:")) {
-        // Depth: 0/1/infinity
-        const char *depth = strstr(header, "Depth:") + 7;
-        if (strncmp(depth, "0", 1) == 0) {
-            return "0";
-        } else if (strncmp(depth, "1", 1) == 0) {
-            return "1";
-        } else if (strncmp(depth, "infinity", 8) == 0) {
-            return "infinity";
-        }
-    }
-    return "infinity";  // 默认值
-}
-
-void handle_propfind(int client, const char *filepath) {
+void handle_propfind(int client, const char *filepath, char *header) {
     struct stat file_stat;
     // TODO: 需要一个大缓冲区来保存响应报文。后续使用malloc分配
     static char response[1024 * 32];
@@ -354,28 +416,17 @@ void handle_propfind(int client, const char *filepath) {
 
     printf("Method: PROPFIND %s\n", filepath);
 
-    /* 获取参数 */
-    int numchars;
-    const char *depth = "infinity";
-    char buf[1024];
-
-    // 获取header其他部分
-    numchars = get_line(client, buf, sizeof(buf));
-    //这个循环的目的是读出指示 body 长度大小的参数，并记录 body 的长度大小。其余的 header 里面的参数一律忽略
-    //注意这里只读完 header 的内容，body 的内容没有读
-    while ((numchars > 0) && strcmp("\n", buf))
-    {
-        if (strncasecmp(buf, "Depth:", 6) == 0) {
-            depth = parse_depth_header(buf); //记录 depth长度
-        }
-        numchars = get_line(client, buf, sizeof(buf));
+    // 检查是否有长度参数，如果有就读取剩余的，没有就不读取。
+    const char depth[16];
+    if (get_header_value(header, "Depth", depth, sizeof(depth))) {
+        strcpy(depth, "infinity"); // 默认"infinity"
     }
-    
+
     //如果 http 请求的 header 没有指示 body 长度大小的参数，则报错返回
     if (strcmp(depth, "infinity") == 0) {
         printf("Depth:%s not support\n", depth);
 
-        snprintf(buf, 1024, "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+        snprintf(response, 1024, "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
                     "<D:multistatus xmlns:D=\"DAV:\">\n"
                     "  <D:response>\n"
                     "    <D:href>%s</D:href>\n"
@@ -391,7 +442,7 @@ void handle_propfind(int client, const char *filepath) {
                     "  </D:error>\n"
                     "</D:multistatus>\n", filepath);
 
-        send_response(client, "403 Forbidden", "application/xml; charset=\"utf-8\"", buf);
+        send_response(client, "403 Forbidden", "application/xml; charset=\"utf-8\"", response);
         return;
     }
 
@@ -455,7 +506,7 @@ int remove_directory(const char *path) {
     return rmdir(path);
 }
 
-void handle_delete(int client, const char *path) {
+void handle_delete(int client, const char *path, char *header) {
     struct stat statbuf;
 
     printf("Method: DELETE %s\n", path);
@@ -485,7 +536,7 @@ void handle_delete(int client, const char *path) {
 }
 
 
-int handle_mkcol(int client, const char *path) {
+int handle_mkcol(int client, const char *path, char *header) {
     
     printf("Method: MKCOL %s\n", path);
 
@@ -530,48 +581,27 @@ char* extract_path_from_url(const char *url) {
 }
 
 const int parse_dest_path(const char *header, char *buf, int buflen) {
-    if (header && strstr(header, PARM_MOVE_DEST)) {
-        char *dest = strstr(header, PARM_MOVE_DEST) + sizeof(PARM_MOVE_DEST);
-        char *path = is_remote_url(dest) ? extract_path_from_url(dest): dest;
-        if (!path)
-            return -1;
-
-        snprintf(buf, buflen, "%s/%s", prefix_dir, path);
-        return 0;
+    char dest[256] = {0};
+    if (get_header_value(header, "Destination", dest, sizeof(dest))) {
+        return -1;
     }
-    return -1;
+
+    char *path = is_remote_url(dest) ? extract_path_from_url(dest): dest;
+    if (!path)
+        return -1;
+
+    snprintf(buf, buflen, "%s/%s", prefix_dir, path);
+    return 0;
 }
 
-int handle_move(int client, const char *path) {
+int handle_move(int client, const char *path, char *header) {
     
     printf("Method: MOVE %s\n", path);
 
     /* 获取参数 */
     int numchars;
-    char buf[1024];
     char dest[256] = {0};
-
-    // 获取header其他部分
-    numchars = get_line(client, buf, sizeof(buf));
-    //这个循环的目的是读出指示 body 长度大小的参数，并记录 body 的长度大小。其余的 header 里面的参数一律忽略
-    //注意这里只读完 header 的内容，body 的内容没有读
-    while ((numchars > 0) && strcmp("\n", buf))
-    {
-        if (strncasecmp(buf, PARM_MOVE_DEST, sizeof(PARM_MOVE_DEST)-1) == 0) {
-            // buf 最后一个字符是'\n'，需要剔除
-            buf[strlen(buf) - 1] = '\0';
-            if (parse_dest_path(buf, dest, sizeof(dest))) {
-                printf("MOVE: parse dest path %s faied\n", buf);
-                send_response(client, "400 Bad Request", "text/plain", "Bad destination");
-                return -1;
-            }
-        }
-        memset(buf, 0, sizeof(buf));
-        numchars = get_line(client, buf, sizeof(buf));
-    }
-
-    // 没有目标参数
-    if (dest[0] == '\0') {
+    if (parse_dest_path(header, dest, sizeof(dest))) {
         send_response(client, "400 Bad Request", "text/plain", "No file destination");
         return -1;
     }
@@ -679,36 +709,12 @@ int copy_file(const char *src, const char *dest, mode_t mode) {
     return 0;
 }
 
-int handle_copy(int client, const char *path) {
+int handle_copy(int client, const char *path, char *header) {
     
     printf("Method: COPY %s\n", path);
 
-    /* 获取参数 */
-    int numchars;
-    char buf[1024];
     char dest[256] = {0};
-
-    // 获取header其他部分
-    numchars = get_line(client, buf, sizeof(buf));
-    //这个循环的目的是读出指示 body 长度大小的参数，并记录 body 的长度大小。其余的 header 里面的参数一律忽略
-    //注意这里只读完 header 的内容，body 的内容没有读
-    while ((numchars > 0) && strcmp("\n", buf))
-    {
-        if (strncasecmp(buf, PARM_MOVE_DEST, sizeof(PARM_MOVE_DEST)-1) == 0) {
-            // buf 最后一个字符是'\n'，需要剔除
-            buf[strlen(buf) - 1] = '\0';
-            if (parse_dest_path(buf, dest, sizeof(dest))) {
-                printf("MOVE: parse dest path %s faied\n", buf);
-                send_response(client, "400 Bad Request", "text/plain", "Bad destination");
-                return -1;
-            }
-        }
-        memset(buf, 0, sizeof(buf));
-        numchars = get_line(client, buf, sizeof(buf));
-    }
-
-    // 没有目标参数
-    if (dest[0] == '\0') {
+    if (parse_dest_path(header, dest, sizeof(dest))) {
         send_response(client, "400 Bad Request", "text/plain", "No file destination");
         return -1;
     }
@@ -767,8 +773,12 @@ void accept_request(int client)
  char *query_string = NULL;
  int check_exist = 0;
 
+ int len = read_header(client, buf, sizeof(buf));
+ printf("header: %d, %s\n", len, buf);
+//  return;
+
  //读http 请求的第一行数据（request line），把请求方法存进 method 中
- numchars = get_line(client, buf, sizeof(buf));
+//  numchars = get_line(client, buf, sizeof(buf));
  i = 0; j = 0;
  while (!ISspace(buf[j]) && (i < sizeof(method) - 1))
  {
@@ -844,9 +854,14 @@ void accept_request(int client)
  
  //在系统上去查询该文件是否存在
  if (stat(path, &st) == -1 && check_exist) {
-  //如果不存在，那把这次 http 的请求后续的内容(head 和 body)全部读完并忽略
-  while ((numchars > 0) && strcmp("\n", buf))  /* read & discard headers */
-   numchars = get_line(client, buf, sizeof(buf));
+    // 检查是否有长度参数，如果有就读取剩余的，没有就不读取。
+    char content_buf[16];
+    if (!get_header_value(buf, "Content-Length", content_buf, sizeof(content_buf))) {
+        //如果不存在，那把这次 http 的请求后续的内容(head 和 body)全部读完并忽略
+        int content_length = atoi(content_buf); //记录 body 的长度大小
+        if (content_length > 0)
+            read_body(client, buf, sizeof(buf), content_length);
+    }
   //然后返回一个找不到文件的 response 给客户端
   not_found(client);
  }
@@ -869,17 +884,17 @@ void accept_request(int client)
   if (strcasecmp(method, "GET") == 0) { //如果不需要 cgi 机制的
     serve_file(client, path);
   } else if (strcasecmp(method, "PUT") == 0) {
-    handle_put(client, path);
+    handle_put(client, path, buf);
   } else if (strcasecmp(method, "PROPFIND") == 0) {
-    handle_propfind(client, path);
+    handle_propfind(client, path, buf);
   } else if (strcasecmp(method, "DELETE") == 0) {
-    handle_delete(client, path);
+    handle_delete(client, path, buf);
   } else if (strcasecmp(method, "MKCOL") == 0) {
-    handle_mkcol(client, path);
+    handle_mkcol(client, path, buf);
   } else if (strcasecmp(method, "MOVE") == 0) {
-    handle_move(client, path);
+    handle_move(client, path, buf);
 } else if (strcasecmp(method, "COPY") == 0) {
-    handle_copy(client, path);
+    handle_copy(client, path, buf);
   } else if (cgi) {
     //如果需要则调用
     execute_cgi(client, path, method, query_string);
@@ -1196,12 +1211,6 @@ void serve_file(int client, const char *filename)
  char buf[1024];
 
   printf("Method: GET %s\n", filename);
-
- //确保 buf 里面有东西，能进入下面的 while 循环
- buf[0] = 'A'; buf[1] = '\0';
- //循环作用是读取并忽略掉这个 http 请求后面的所有内容
- while ((numchars > 0) && strcmp("\n", buf))  /* read & discard headers */
-  numchars = get_line(client, buf, sizeof(buf));
 
  //打开这个传进来的这个路径所指的文件
  resource = fopen(filename, "r");
