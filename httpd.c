@@ -772,13 +772,23 @@ void accept_request(int client)
                     * program */
  char *query_string = NULL;
  int check_exist = 0;
+ char *param; // param start from second line
 
  int len = read_header(client, buf, sizeof(buf));
  printf("header: %d, %s\n", len, buf);
-//  return;
+ if (len < 0) {
+    bad_request(client);
+    return;
+ }
+ 
+ // skip newline
+ param = strstr(buf, "\n");
+ while (*param == '\n' || *param == '\r')
+ {
+    param++;
+ }
 
  //读http 请求的第一行数据（request line），把请求方法存进 method 中
-//  numchars = get_line(client, buf, sizeof(buf));
  i = 0; j = 0;
  while (!ISspace(buf[j]) && (i < sizeof(method) - 1))
  {
@@ -856,7 +866,7 @@ void accept_request(int client)
  if (stat(path, &st) == -1 && check_exist) {
     // 检查是否有长度参数，如果有就读取剩余的，没有就不读取。
     char content_buf[16];
-    if (!get_header_value(buf, "Content-Length", content_buf, sizeof(content_buf))) {
+    if (!get_header_value(param, "Content-Length", content_buf, sizeof(content_buf))) {
         //如果不存在，那把这次 http 的请求后续的内容(head 和 body)全部读完并忽略
         int content_length = atoi(content_buf); //记录 body 的长度大小
         if (content_length > 0)
@@ -880,26 +890,29 @@ void accept_request(int client)
         cgi = 1;
     //如果这个文件是一个可执行文件，不论是属于用户/组/其他这三者类型的，就将 cgi 标志变量置一
   }
-
-  if (strcasecmp(method, "GET") == 0) { //如果不需要 cgi 机制的
-    serve_file(client, path);
+  
+  if (strcasecmp(method, "GET") == 0 || strcasecmp(method, "POST") == 0) {
+    // GET方法可能有参数，就是CGI，没有就是普通的文件返回。POST一定是有CGI的。
+    if (!cgi) { //如果不需要 cgi 机制的
+        serve_file(client, path);
+    } else {
+        printf("is cgi %d, method: %s, query: %s\n", cgi, method, query_string);
+        //如果需要则调用
+        execute_cgi(client, path, method, query_string, param);
+    }
   } else if (strcasecmp(method, "PUT") == 0) {
-    handle_put(client, path, buf);
+    handle_put(client, path, param);
   } else if (strcasecmp(method, "PROPFIND") == 0) {
-    handle_propfind(client, path, buf);
+    handle_propfind(client, path, param);
   } else if (strcasecmp(method, "DELETE") == 0) {
-    handle_delete(client, path, buf);
+    handle_delete(client, path, param);
   } else if (strcasecmp(method, "MKCOL") == 0) {
-    handle_mkcol(client, path, buf);
+    handle_mkcol(client, path, param);
   } else if (strcasecmp(method, "MOVE") == 0) {
-    handle_move(client, path, buf);
-} else if (strcasecmp(method, "COPY") == 0) {
-    handle_copy(client, path, buf);
-  } else if (cgi) {
-    //如果需要则调用
-    execute_cgi(client, path, method, query_string, buf);
+    handle_move(client, path, param);
+  } else if (strcasecmp(method, "COPY") == 0) {
+    handle_copy(client, path, param);
   }
-
  }
  // disconnect first
   shutdown(client, SHUT_RDWR);
@@ -994,18 +1007,26 @@ void execute_cgi(int client, const char *path,
  char c;
  int content_length = -1;
 
-    // 检查是否有长度参数，如果有就读取剩余的，没有就不读取。
-    char content_buf[16];
-    if (!get_header_value(header, "Content-Length", content_buf, sizeof(content_buf))) {
-        //如果不存在，那把这次 http 的请求后续的内容(head 和 body)全部读完并忽略
-        content_length = atoi(content_buf); //记录 body 的长度大小
-    }
+    if (strcasecmp(method, "GET") == 0) {
+        // query must > 0
+        if (!strlen(query_string)) {
+            bad_request(client);
+            return;
+        }
+    } else if (strcasecmp(method, "POST") == 0) {
+        // 检查是否有长度参数，如果有就读取剩余的，没有就不读取。
+        char content_buf[16];
+        if (!get_header_value(header, "Content-Length", content_buf, sizeof(content_buf))) {
+            //如果不存在，那把这次 http 的请求后续的内容(head 和 body)全部读完并忽略
+            content_length = atoi(content_buf); //记录 body 的长度大小
+        }
 
-  //如果 http 请求的 header 没有指示 body 长度大小的参数，则报错返回
-  if (content_length == -1) {
-   bad_request(client);
-   return;
-  }
+        //如果 http 请求的 header 没有指示 body 长度大小的参数，则报错返回
+        if (content_length == -1) {
+            bad_request(client);
+            return;
+        }
+    }
 
  sprintf(buf, "HTTP/1.0 200 OK\r\n");
  send(client, buf, strlen(buf), 0);
