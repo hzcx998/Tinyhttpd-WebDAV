@@ -55,10 +55,9 @@ void serve_file(int, const char *);
 int startup(u_short *);
 void unimplemented(int);
 
-char *prefix_dir = "htdocs";
-
-// append index.html
-int append_index = 0;
+// config by user
+char *browser_root = "htdocs";
+char *webdav_root = "webdav";
 
 // 发送HTTP响应
 void send_response(int client, const char *status, const char *content_type, const char *body) {
@@ -590,7 +589,7 @@ const int parse_dest_path(const char *header, char *buf, int buflen) {
     if (!path)
         return -1;
 
-    snprintf(buf, buflen, "%s/%s", prefix_dir, path);
+    snprintf(buf, buflen, "%s/%s", webdav_root, path);
     return 0;
 }
 
@@ -754,6 +753,22 @@ int handle_copy(int client, const char *path, char *header) {
     return 0;
 }
 
+int check_webdav(char *buf)
+{
+    char *mozila;
+    char useragent[256];
+    if (get_header_value(buf, "User-Agent", useragent, sizeof(useragent))) {
+        return 0; // 没有agent
+    }
+    // 基本上浏览器都有Mozilla，所以简单判断就行
+    mozila = strstr(useragent, "Mozilla");
+    if (mozila != NULL) {
+        return 0;
+    }
+    // 其他客户端就认定为webdav
+    return 1;
+}
+
 /**********************************************************************/
 /* A request has caused a call to accept() on the server port to
  * return.  Process the request appropriately.
@@ -773,10 +788,12 @@ void accept_request(int client)
  char *query_string = NULL;
  int check_exist = 0;
  char *param; // param start from second line
+ int is_webdav = 0;
+ char *prefix_dir;
 
  int len = read_header(client, buf, sizeof(buf));
- printf("header: %d, %s\n", len, buf);
- if (len < 0) {
+//  printf("header: %d, %s\n", len, buf);
+ if (len <= 0) {
     bad_request(client);
     return;
  }
@@ -787,6 +804,11 @@ void accept_request(int client)
  {
     param++;
  }
+
+ /* 获取用户代理，如果是浏览器，就使用浏览器方式，不然就是webdav文件传输。 */
+ is_webdav = check_webdav(param);
+ prefix_dir = is_webdav ? webdav_root : browser_root;
+//  printf("is webdav: %d\n", is_webdav);
 
  //读http 请求的第一行数据（request line），把请求方法存进 method 中
  i = 0; j = 0;
@@ -829,23 +851,24 @@ void accept_request(int client)
  if (strcasecmp(method, "GET") == 0)
  {
   check_exist = 1;
-
-  //用一个指针指向 url
-  query_string = url;
-  
-  //去遍历这个 url，跳过字符 ？前面的所有字符，如果遍历完毕也没找到字符 ？则退出循环
-  while ((*query_string != '?') && (*query_string != '\0'))
-   query_string++;
-  
-  //退出循环后检查当前的字符是 ？还是字符串(url)的结尾
-  if (*query_string == '?')
-  {
-   //如果是 ？ 的话，证明这个请求需要调用 cgi，将 cgi 标志变量置一(true)
-   cgi = 1;
-   //从字符 ？ 处把字符串 url 给分隔会两份
-   *query_string = '\0';
-   //使指针指向字符 ？后面的那个字符
-   query_string++;
+  if (!is_webdav) {
+    //用一个指针指向 url
+    query_string = url;
+    
+    //去遍历这个 url，跳过字符 ？前面的所有字符，如果遍历完毕也没找到字符 ？则退出循环
+    while ((*query_string != '?') && (*query_string != '\0'))
+    query_string++;
+    
+    //退出循环后检查当前的字符是 ？还是字符串(url)的结尾
+    if (*query_string == '?')
+    {
+    //如果是 ？ 的话，证明这个请求需要调用 cgi，将 cgi 标志变量置一(true)
+    cgi = 1;
+    //从字符 ？ 处把字符串 url 给分隔会两份
+    *query_string = '\0';
+    //使指针指向字符 ？后面的那个字符
+    query_string++;
+    }
   }
  }
 
@@ -859,7 +882,7 @@ void accept_request(int client)
  sprintf(path, "%s%s", prefix_dir, url);
  
  //如果 path 数组中的这个字符串的最后一个字符是以字符 / 结尾的话，就拼接上一个"index.html"的字符串。首页的意思
- if (append_index && path[strlen(path) - 1] == '/')
+ if (!is_webdav && path[strlen(path) - 1] == '/')
   strcat(path, "index.html");
  
  //在系统上去查询该文件是否存在
@@ -879,21 +902,21 @@ void accept_request(int client)
  {
   //文件存在，那去跟常量S_IFMT相与，相与之后的值可以用来判断该文件是什么类型的
   //S_IFMT参读《TLPI》P281，与下面的三个常量一样是包含在<sys/stat.h>
-  if (append_index && (st.st_mode & S_IFMT) == S_IFDIR)  
+  if (!is_webdav && (st.st_mode & S_IFMT) == S_IFDIR)  
    //如果这个文件是个目录，那就需要再在 path 后面拼接一个"/index.html"的字符串
    strcat(path, "/index.html");
    
    //S_IXUSR, S_IXGRP, S_IXOTH三者可以参读《TLPI》P295
   if ((st.st_mode & S_IXUSR) ||       
       (st.st_mode & S_IXGRP) ||
-      (st.st_mode & S_IXOTH)    ) {
+      (st.st_mode & S_IXOTH) && !is_webdav) {
         cgi = 1;
     //如果这个文件是一个可执行文件，不论是属于用户/组/其他这三者类型的，就将 cgi 标志变量置一
   }
   
   if (strcasecmp(method, "GET") == 0 || strcasecmp(method, "POST") == 0) {
     // GET方法可能有参数，就是CGI，没有就是普通的文件返回。POST一定是有CGI的。
-    if (!cgi) { //如果不需要 cgi 机制的
+    if (!cgi || is_webdav) { //如果不需要 cgi 机制的
         serve_file(client, path);
     } else {
         printf("is cgi %d, method: %s, query: %s\n", cgi, method, query_string);
