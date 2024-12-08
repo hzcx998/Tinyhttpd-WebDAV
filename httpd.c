@@ -47,7 +47,7 @@ void bad_request(int);
 void cat(int, FILE *);
 void cannot_execute(int);
 void error_die(const char *);
-void execute_cgi(int, const char *, const char *, const char *);
+void execute_cgi(int, const char *, const char *, const char *, char *header);
 int get_line(int, char *, int);
 void headers(int, const char *);
 void not_found(int);
@@ -897,7 +897,7 @@ void accept_request(int client)
     handle_copy(client, path, buf);
   } else if (cgi) {
     //如果需要则调用
-    execute_cgi(client, path, method, query_string);
+    execute_cgi(client, path, method, query_string, buf);
   }
 
  }
@@ -983,7 +983,7 @@ void error_die(const char *sc)
  *             path to the CGI script */
 /**********************************************************************/
 void execute_cgi(int client, const char *path,
-                 const char *method, const char *query_string)
+                 const char *method, const char *query_string, char *header)
 {
  char buf[1024];
  int cgi_output[2];
@@ -992,35 +992,20 @@ void execute_cgi(int client, const char *path,
  int status;
  int i;
  char c;
- int numchars = 1;
  int content_length = -1;
- 
- //往 buf 中填东西以保证能进入下面的 while
- buf[0] = 'A'; buf[1] = '\0';
- //如果是 http 请求是 GET 方法的话读取并忽略请求剩下的内容
- if (strcasecmp(method, "GET") == 0)
-  while ((numchars > 0) && strcmp("\n", buf))  /* read & discard headers */
-   numchars = get_line(client, buf, sizeof(buf));
- else    /* POST */
- {
-  //只有 POST 方法才继续读内容
-  numchars = get_line(client, buf, sizeof(buf));
-  //这个循环的目的是读出指示 body 长度大小的参数，并记录 body 的长度大小。其余的 header 里面的参数一律忽略
-  //注意这里只读完 header 的内容，body 的内容没有读
-  while ((numchars > 0) && strcmp("\n", buf))
-  {
-   buf[15] = '\0';
-   if (strcasecmp(buf, "Content-Length:") == 0)
-    content_length = atoi(&(buf[16])); //记录 body 的长度大小
-   numchars = get_line(client, buf, sizeof(buf));
-  }
-  
+
+    // 检查是否有长度参数，如果有就读取剩余的，没有就不读取。
+    char content_buf[16];
+    if (!get_header_value(header, "Content-Length", content_buf, sizeof(content_buf))) {
+        //如果不存在，那把这次 http 的请求后续的内容(head 和 body)全部读完并忽略
+        content_length = atoi(content_buf); //记录 body 的长度大小
+    }
+
   //如果 http 请求的 header 没有指示 body 长度大小的参数，则报错返回
   if (content_length == -1) {
    bad_request(client);
    return;
   }
- }
 
  sprintf(buf, "HTTP/1.0 200 OK\r\n");
  send(client, buf, strlen(buf), 0);
