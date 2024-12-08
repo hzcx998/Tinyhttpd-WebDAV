@@ -363,11 +363,16 @@ int generate_propfind_response(char *xml_response, int response_len, const char 
   return offset;
 }
 
-static int propfind_dir(int client, char *response, int response_len, const char *filepath)
+#define PROP_CHUNK 2048
+#define EXPAND_SIZE (PROP_CHUNK * 4)
+
+static int propfind_dir(int client, const char *filepath)
 {
   DIR *dir;
   struct dirent *entry;
   char entry_path[1024];
+  char *response;
+  size_t response_len = EXPAND_SIZE;
   char mtime[64];
   int offset = 0;
   struct stat statbuf;
@@ -376,6 +381,13 @@ static int propfind_dir(int client, char *response, int response_len, const char
   if (dir == NULL) {
       send_response(client, "500 Internal Server Error", "text/plain", "Failed to open directory");
       return -1;
+  }
+
+  response = malloc(response_len);
+  if (!response) {
+    closedir(dir);
+    send_response(client, "500 Internal Server Error", "text/plain", "Failed to open directory");
+    return -1;
   }
 
   // 其他XML部分...
@@ -390,18 +402,33 @@ static int propfind_dir(int client, char *response, int response_len, const char
       // 构建完整的文件路径
       memset(entry_path, 0, sizeof(entry_path));
       snprintf(entry_path, sizeof(entry_path), "%s/%s", filepath, entry->d_name);
-
+      
       if (stat(entry_path, &statbuf) == -1) {
         closedir(dir);
+        free(response);
+        send_response(client, "500 Internal Server Error", "text/plain", "Remove directory failed");
         return -1; 
       }
 
       // 获取文件状态
       offset = generate_propfind_response_body(&statbuf, response, response_len, offset, entry_path);
+      // 扩展响应内存
+      if (offset + PROP_CHUNK > response_len) {
+        // printf("expand , response len %d, off %d\n", response_len, offset);
+        response = realloc(response, response_len + EXPAND_SIZE);
+        if (!response) {
+            closedir(dir);
+            free(response);
+            send_response(client, "500 Internal Server Error", "text/plain", "Remove directory failed");
+            return -1;
+        }
+        response_len += EXPAND_SIZE;
+      }
   }
-
+  
   offset += sprintf(response + offset, "</D:multistatus>");
-
+  send_response(client, "207 Multi-Status", "application/xml", response);
+  free(response);
   closedir(dir);
 
   return offset;
@@ -409,9 +436,8 @@ static int propfind_dir(int client, char *response, int response_len, const char
 
 void handle_propfind(int client, const char *filepath, char *header) {
     struct stat file_stat;
-    // TODO: 需要一个大缓冲区来保存响应报文。后续使用malloc分配
-    static char response[1024 * 32];
-    memset(response, 0, 1024 * 32);
+    char response[PROP_CHUNK];
+    memset(response, 0, sizeof(response));
 
     printf("Method: PROPFIND %s\n", filepath);
 
@@ -452,13 +478,12 @@ void handle_propfind(int client, const char *filepath, char *header) {
 
     // 只有depth为1才返回目录，不然依然返回文件信息
     if (S_ISDIR(file_stat.st_mode) && strcmp(depth, "1") == 0) {
-      if (propfind_dir(client, response, sizeof(response), filepath) == -1)
+      if (propfind_dir(client, filepath) == -1)
         return;
     } else {
       generate_propfind_response(response, sizeof(response), filepath);
+      send_response(client, "207 Multi-Status", "application/xml", response);
     }
-
-    send_response(client, "207 Multi-Status", "application/xml", response);
 }
 
 // 递归删除目录及其所有内容
