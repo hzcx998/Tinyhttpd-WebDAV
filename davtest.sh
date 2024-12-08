@@ -13,6 +13,7 @@ usage() {
     echo "Usage: $0 <command> [options]"
     echo "Commands:"
     echo "  list           List directory contents"
+    echo "  options        Get options"
     echo "  upload <file>  Upload a file to WebDAV"
     echo "  mkcol <dir>    Create a new collection (directory)"
     echo "  delete <path>  Delete a file or directory"
@@ -37,6 +38,10 @@ case "$COMMAND" in
     list)
         FILE=$1
         $CURL -u $USERNAME:$PASSWORD -X PROPFIND "$WEBDAV_URL/$(basename "$FILE")" -H "Depth: 1"
+        ;;
+    options)
+        FILE=$1
+        $CURL -X OPTIONS $WEBDAV_URL -i
         ;;
     upload)
         if [ $# -lt 1 ]; then

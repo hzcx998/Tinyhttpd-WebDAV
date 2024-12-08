@@ -40,7 +40,7 @@
 
 #define ISspace(x) isspace((int)(x))
 
-#define SERVER_STRING "Server: jdbhttpd/0.1.0\r\n"
+#define SERVER_STRING "Server: tinyhttpd/0.1.0\r\n"
 
 void accept_request(int);
 void bad_request(int);
@@ -769,6 +769,32 @@ int check_webdav(char *buf)
     return 1;
 }
 
+void handle_options(int client) {
+    char buf[1024];
+
+    printf("Method: OPTIONS\n");
+
+    sprintf(buf, "HTTP/1.0 200 OK\r\n");
+    send(client, buf, strlen(buf), 0);
+
+    sprintf(buf, SERVER_STRING);
+    send(client, buf, strlen(buf), 0);
+
+    // 设置Allow头，列出支持的方法
+    // 全部功能：OPTIONS, TRACE, GET, HEAD, DELETE, COPY, MOVE, PROPFIND, PROPPATCH, SEARCH, MKCOL, LOCK, UNLOCK
+    // 不过目前只支持部分功能
+    sprintf(buf, "Allow: OPTIONS, GET, POST, DELETE, COPY, MOVE, PROPFIND, MKCOL\r\n");
+    send(client, buf, strlen(buf), 0);
+
+    // 设置Content-Length头
+    sprintf(buf, "Content-Length: 0\r\n");
+    send(client, buf, strlen(buf), 0);
+
+    // 添加空行表示头部结束
+    sprintf(buf, "\r\n");
+    send(client, buf, strlen(buf), 0);
+}
+
 /**********************************************************************/
 /* A request has caused a call to accept() on the server port to
  * return.  Process the request appropriately.
@@ -822,7 +848,7 @@ void accept_request(int client)
  //如果请求的方法不是 GET 或 POST 任意一个的话就直接发送 response 告诉客户端没实现该方法
  if (strcasecmp(method, "GET") && strcasecmp(method, "POST") && strcasecmp(method, "PUT") && 
     strcasecmp(method, "PROPFIND") && strcasecmp(method, "DELETE") && strcasecmp(method, "MKCOL") &&
-    strcasecmp(method, "MOVE") && strcasecmp(method, "COPY"))
+    strcasecmp(method, "MOVE") && strcasecmp(method, "COPY") && strcasecmp(method, "OPTIONS"))
  {
   unimplemented(client);
   return;
@@ -935,6 +961,8 @@ void accept_request(int client)
     handle_move(client, path, param);
   } else if (strcasecmp(method, "COPY") == 0) {
     handle_copy(client, path, param);
+  } else if (strcasecmp(method, "OPTIONS") == 0) {
+    handle_options(client);
   }
  }
  // disconnect first
