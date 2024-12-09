@@ -1083,13 +1083,7 @@ void execute_cgi(int client, const char *path,
  char c;
  int content_length = -1;
 
-    if (strcasecmp(method, "GET") == 0) {
-        // query must > 0
-        if (!strlen(query_string)) {
-            bad_request(client);
-            return;
-        }
-    } else if (strcasecmp(method, "POST") == 0) {
+    if (strcasecmp(method, "POST") == 0) {
         // 检查是否有长度参数，如果有就读取剩余的，没有就不读取。
         char content_buf[16];
         if (!get_header_value(header, "Content-Length", content_buf, sizeof(content_buf))) {
@@ -1146,7 +1140,7 @@ void execute_cgi(int client, const char *path,
   putenv(meth_env);
   
   //根据http 请求的不同方法，构造并存储不同的环境变量
-  if (strcasecmp(method, "GET") == 0) {
+  if (strcasecmp(method, "GET") == 0 && query_string[0] != '\0') {
    sprintf(query_env, "QUERY_STRING=%s", query_string);
    putenv(query_env);
   }
