@@ -40,7 +40,8 @@
 
 #define ISspace(x) isspace((int)(x))
 
-#define SERVER_STRING "Server: tinyhttpd/0.1.0\r\n"
+#define SERVER_NAME "tinyhttpd/0.1.0"
+#define SERVER_STRING "Server: "SERVER_NAME"\r\n"
 
 void accept_request(int);
 void bad_request(int);
@@ -55,9 +56,18 @@ void serve_file(int, const char *);
 int startup(u_short *);
 void unimplemented(int);
 
-// config by user
+// 使能目录查看功能
+int enable_indexes = 1;
+
+// 浏览器服务目录
 char *browser_root = "htdocs";
+// webdav服务目录
 char *webdav_root = "webdav";
+
+// 默认浏览器索引文件
+char *index_file = "index.html";
+
+static u_short port = 8080;
 
 // 发送HTTP响应
 void send_response(int client, const char *status, const char *content_type, const char *body) {
@@ -841,6 +851,7 @@ void accept_request(int client)
  char *param; // param start from second line
  int is_webdav = 0;
  char *prefix_dir;
+ int show_dir = 0;
 
  int len = read_header(client, buf, sizeof(buf));
 //  printf("header: %d, %s\n", len, buf);
@@ -932,10 +943,17 @@ void accept_request(int client)
  //将前面分隔两份的前面那份字符串，拼接在字符串htdocs的后面之后就输出存储到数组 path 中。相当于现在 path 中存储着一个字符串
  sprintf(path, "%s%s", prefix_dir, url);
  
- //如果 path 数组中的这个字符串的最后一个字符是以字符 / 结尾的话，就拼接上一个"index.html"的字符串。首页的意思
- if (!is_webdav && path[strlen(path) - 1] == '/')
-  strcat(path, "index.html");
- 
+    //如果 path 数组中的这个字符串的最后一个字符是以字符 / 结尾的话，就拼接上一个"index.html"的字符串。首页的意思
+    if (!is_webdav && path[strlen(path) - 1] == '/') {
+        if (!enable_indexes) {
+            strcat(path, index_file);
+        } else {
+            // 如果使能索引了，就是浏览目录
+            show_dir = 1;
+            cgi = 1;
+        }
+    }
+
  //在系统上去查询该文件是否存在
  if (stat(path, &st) == -1 && check_exist) {
     // 检查是否有长度参数，如果有就读取剩余的，没有就不读取。
@@ -951,11 +969,20 @@ void accept_request(int client)
  }
  else
  {
-  //文件存在，那去跟常量S_IFMT相与，相与之后的值可以用来判断该文件是什么类型的
-  //S_IFMT参读《TLPI》P281，与下面的三个常量一样是包含在<sys/stat.h>
-  if (!is_webdav && (st.st_mode & S_IFMT) == S_IFDIR)  
-   //如果这个文件是个目录，那就需要再在 path 后面拼接一个"/index.html"的字符串
-   strcat(path, "/index.html");
+    //文件存在，那去跟常量S_IFMT相与，相与之后的值可以用来判断该文件是什么类型的
+    //S_IFMT参读《TLPI》P281，与下面的三个常量一样是包含在<sys/stat.h>
+    if (!is_webdav && (st.st_mode & S_IFMT) == S_IFDIR) {
+        if (!enable_indexes) {
+            //如果这个文件是个目录，那就需要再在 path 后面拼接一个"/index.html"的字符串
+            if (path[strlen(path) - 1] != '/')
+                strcat(path, "/");
+            strcat(path, index_file);
+        } else {
+            // 如果使能索引了，就是浏览目录
+            show_dir = 1;
+            cgi = 1;
+        }
+    }
    
    //S_IXUSR, S_IXGRP, S_IXOTH三者可以参读《TLPI》P295
   if ((st.st_mode & S_IXUSR) ||       
@@ -970,9 +997,15 @@ void accept_request(int client)
     if (!cgi || is_webdav) { //如果不需要 cgi 机制的
         serve_file(client, path);
     } else {
-        printf("is cgi %d, method: %s, query: %s\n", cgi, method, query_string);
-        //如果需要则调用
-        execute_cgi(client, path, method, query_string, param);
+        if (!show_dir) {
+            //如果需要则调用
+            execute_cgi(client, path, method, query_string, param);
+        } else {
+            //显示目录
+            char query_param[256];
+            snprintf(query_param, 256, "dir=%s", path);
+            execute_cgi(client, "filebrowser/index.py", method, query_param, param);
+        }
     }
   } else if (strcasecmp(method, "PUT") == 0) {
     handle_put(client, path, param);
@@ -1024,15 +1057,13 @@ void bad_request(int client)
 /**********************************************************************/
 void cat(int client, FILE *resource)
 {
- char buf[1024];
+    char buf[1024];
+    size_t bytes_read;
 
- //从文件文件描述符中读取指定内容
- fgets(buf, sizeof(buf), resource);
- while (!feof(resource))
- {
-  send(client, buf, strlen(buf), 0);
-  fgets(buf, sizeof(buf), resource);
- }
+    // 从文件中读取指定内容
+    while ((bytes_read = fread(buf, 1, sizeof(buf), resource)) > 0) {
+        send(client, buf, bytes_read, 0);
+    }
 }
 
 /**********************************************************************/
@@ -1082,6 +1113,8 @@ void execute_cgi(int client, const char *path,
  int i;
  char c;
  int content_length = -1;
+
+    printf("CGI: path: %s, method: %s, query: %s\n", path, method, query_string);
 
     if (strcasecmp(method, "POST") == 0) {
         // 检查是否有长度参数，如果有就读取剩余的，没有就不读取。
@@ -1148,7 +1181,7 @@ void execute_cgi(int client, const char *path,
    sprintf(length_env, "CONTENT_LENGTH=%d", content_length);
    putenv(length_env);
   }
-  
+
   //execl()包含于<unistd.h>中，参读《TLPI》P567
   //最后将子进程替换成另一个进程并执行 cgi 脚本
   execl(path, path, NULL);
@@ -1234,13 +1267,15 @@ int get_line(int sock, char *buf, int size)
 void headers(int client, const char *filename)
 {
  char buf[1024];
- (void)filename;  /* could use filename to determine file type */
+
+ char mime_type[128];
+ get_mime_type(filename, mime_type, sizeof(mime_type)); // 假设有一个函数来获取MIME类型
 
  strcpy(buf, "HTTP/1.0 200 OK\r\n");
  send(client, buf, strlen(buf), 0);
  strcpy(buf, SERVER_STRING);
  send(client, buf, strlen(buf), 0);
- sprintf(buf, "Content-Type: text/html\r\n");
+ sprintf(buf, "Content-Type: %s\r\n", mime_type);
  send(client, buf, strlen(buf), 0);
  strcpy(buf, "\r\n");
  send(client, buf, strlen(buf), 0);
@@ -1397,7 +1432,6 @@ void handle_term(int signo)
 
 int main(void)
 {
- u_short port = 8080;
  int client_sock = -1;
  //sockaddr_in 是 IPV4的套接字地址结构。定义在<netinet/in.h>,参读《TLPI》P1202
  struct sockaddr_in client_name;
