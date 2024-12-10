@@ -67,7 +67,7 @@ void unimplemented(int);
 // 使能目录查看功能
 int enable_indexes = 1;
 
-// 浏览器服务目录
+// 浏览器服务目录，可修改为htdocs
 char *browser_root = "webdav";
 // webdav服务目录
 char *webdav_root = "webdav";
