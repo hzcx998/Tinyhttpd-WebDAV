@@ -361,7 +361,7 @@ int generate_propfind_response_body(struct stat *statbuf, char *xml_response, in
 }
 
 // 假设有一个函数来获取文件或目录的属性
-int generate_propfind_response(char *xml_response, int response_len, const char *path) {
+int generate_propfind_response(char *xml_response, int response_len, const char *path, char *url) {
   struct stat statbuf;
   int offset = 0;
 
@@ -374,7 +374,7 @@ int generate_propfind_response(char *xml_response, int response_len, const char 
                       "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
                       "<D:multistatus xmlns:D=\"DAV:\">\n");
 
-  offset = generate_propfind_response_body(&statbuf, xml_response, response_len, offset, path);
+  offset = generate_propfind_response_body(&statbuf, xml_response, response_len, offset, url);
 
   // 结束multistatus元素
   offset += snprintf(xml_response + offset, response_len,
@@ -386,11 +386,12 @@ int generate_propfind_response(char *xml_response, int response_len, const char 
 #define PROP_CHUNK 2048
 #define EXPAND_SIZE (PROP_CHUNK * 4)
 
-static int propfind_dir(int client, const char *filepath)
+static int propfind_dir(int client, const char *filepath, char *url)
 {
   DIR *dir;
   struct dirent *entry;
   char entry_path[1024];
+  char entry_url[1024];
   char *response;
   size_t response_len = EXPAND_SIZE;
   char mtime[64];
@@ -421,17 +422,28 @@ static int propfind_dir(int client, const char *filepath)
 
       // 构建完整的文件路径
       memset(entry_path, 0, sizeof(entry_path));
-      snprintf(entry_path, sizeof(entry_path), "%s/%s", filepath, entry->d_name);
+      if (filepath[strlen(filepath) - 1] == '/') {
+        snprintf(entry_path, sizeof(entry_path), "%s%s", filepath, entry->d_name);
+      } else {
+        snprintf(entry_path, sizeof(entry_path), "%s/%s", filepath, entry->d_name);
+      }
       
+      memset(entry_url, 0, sizeof(entry_url));
+      if (url[strlen(url) - 1] == '/') {
+        snprintf(entry_url, sizeof(entry_url), "%s%s", url, entry->d_name);
+      } else {
+        snprintf(entry_url, sizeof(entry_url), "%s/%s", url, entry->d_name);
+      }
+
       if (stat(entry_path, &statbuf) == -1) {
         closedir(dir);
         free(response);
-        send_response(client, "500 Internal Server Error", "text/plain", "Remove directory failed");
+        send_response(client, "500 Internal Server Error", "text/plain", "File not exist");
         return -1; 
       }
 
       // 获取文件状态
-      offset = generate_propfind_response_body(&statbuf, response, response_len, offset, entry_path);
+      offset = generate_propfind_response_body(&statbuf, response, response_len, offset, entry_url);
       // 扩展响应内存
       if (offset + PROP_CHUNK > response_len) {
         // printf("expand , response len %d, off %d\n", response_len, offset);
@@ -439,7 +451,7 @@ static int propfind_dir(int client, const char *filepath)
         if (!response) {
             closedir(dir);
             free(response);
-            send_response(client, "500 Internal Server Error", "text/plain", "Remove directory failed");
+            send_response(client, "500 Internal Server Error", "text/plain", "No enough memory");
             return -1;
         }
         response_len += EXPAND_SIZE;
@@ -454,7 +466,7 @@ static int propfind_dir(int client, const char *filepath)
   return offset;
 }
 
-void handle_propfind(int client, const char *filepath, char *header) {
+void handle_propfind(int client, const char *filepath, const char *url, char *header) {
     struct stat file_stat;
     char response[PROP_CHUNK];
     memset(response, 0, sizeof(response));
@@ -485,7 +497,7 @@ void handle_propfind(int client, const char *filepath, char *header) {
                     "  <D:error>\n"
                     "    <D:cannot-modify-property />\n"
                     "  </D:error>\n"
-                    "</D:multistatus>\n", filepath);
+                    "</D:multistatus>\n", url);
 
         send_response(client, "403 Forbidden", "application/xml; charset=\"utf-8\"", response);
         return;
@@ -498,10 +510,10 @@ void handle_propfind(int client, const char *filepath, char *header) {
 
     // 只有depth为1才返回目录，不然依然返回文件信息
     if (S_ISDIR(file_stat.st_mode) && strcmp(depth, "1") == 0) {
-      if (propfind_dir(client, filepath) == -1)
+      if (propfind_dir(client, filepath, url) == -1)
         return;
     } else {
-      generate_propfind_response(response, sizeof(response), filepath);
+      generate_propfind_response(response, sizeof(response), filepath, url);
       send_response(client, "207 Multi-Status", "application/xml", response);
     }
 }
@@ -1025,7 +1037,7 @@ void accept_request(int client)
   } else if (strcasecmp(method, "PUT") == 0) {
     handle_put(client, path, param);
   } else if (strcasecmp(method, "PROPFIND") == 0) {
-    handle_propfind(client, path, param);
+    handle_propfind(client, path, url, param);
   } else if (strcasecmp(method, "DELETE") == 0) {
     handle_delete(client, path, param);
   } else if (strcasecmp(method, "MKCOL") == 0) {
