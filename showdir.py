@@ -63,6 +63,20 @@ print("            </tr>")
 # Get the list of files and directories
 files = os.listdir(directory)
 
+# Function to get the icon based on file extension
+def get_icon(filename):
+    if os.path.isdir(filename):
+        return '/icons/folder.gif'
+    ext = os.path.splitext(filename)[1].lower()
+    if ext in ['.txt', '.doc', '.docx']:
+        return '/icons/text.gif'
+    elif ext in ['.pdf']:
+        return '/icons/pdf.gif'
+    elif ext in ['.jpg', '.jpeg', '.png', '.gif']:
+        return '/icons/image.gif'
+    # Add more file types and their corresponding icons as needed
+    return '/icons/unknown.gif'
+
 # Print each file and directory in the listing
 for filename in files:
     filepath = os.path.join(directory, filename)
@@ -72,12 +86,12 @@ for filename in files:
 
     print("            <tr>")
     print("                <td valign='top'>")
+    icon = get_icon(filepath)
+    print(f"                    <img src='{icon}' alt='[FILE]'>")
     if os.path.isdir(filepath):
-        print("                    <img src='/icons/folder.gif' alt='[DIR]'>")
         # 使用绝对路径和URL编码，确保目录链接正确
         print(f"                <td><a href='{filename}/'>{filename}/</a></td>")
     else:
-        print("                    <img src='/icons/unknown.gif' alt='[   ]'>")
         print(f"                <td><a href='{filename}'>{filename}</a></td>")
     print(f"                <td align='right'>{last_modified}</td>")
     if os.path.isdir(filepath):
