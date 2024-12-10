@@ -56,13 +56,23 @@ void serve_file(int, const char *);
 int startup(u_short *);
 void unimplemented(int);
 
+/**
+ * 功能配置说明：
+ * browser_root：在浏览器访问时显示的目录
+ * webdav_root：在webdav客户端访问时显示的目录
+ * index_file：在浏览器访问目录时访问的默认首页文件
+ * enable_indexes：在浏览器访问目录时是否显示目录，如果配置1，则显示目录，不然则返回index_file对应的文件
+ */
+
 // 使能目录查看功能
 int enable_indexes = 1;
 
 // 浏览器服务目录
-char *browser_root = "htdocs";
+char *browser_root = "webdav";
 // webdav服务目录
 char *webdav_root = "webdav";
+
+char *icons_root = "icons";
 
 // 默认浏览器索引文件
 char *index_file = "index.html";
@@ -939,9 +949,14 @@ void accept_request(int client)
  {
     check_exist = 1;
  }
-
- //将前面分隔两份的前面那份字符串，拼接在字符串htdocs的后面之后就输出存储到数组 path 中。相当于现在 path 中存储着一个字符串
- sprintf(path, "%s%s", prefix_dir, url);
+ 
+    // 拦截icons目录
+    if (enable_indexes && strncmp(url, "/icons/", 7) == 0) {
+        sprintf(path, "%s", (url + 1)); // skip '/'
+    } else {
+        //将前面分隔两份的前面那份字符串，拼接在字符串htdocs的后面之后就输出存储到数组 path 中。相当于现在 path 中存储着一个字符串
+        sprintf(path, "%s%s", prefix_dir, url);
+    }
  
     //如果 path 数组中的这个字符串的最后一个字符是以字符 / 结尾的话，就拼接上一个"index.html"的字符串。首页的意思
     if (!is_webdav && path[strlen(path) - 1] == '/') {
@@ -1003,8 +1018,8 @@ void accept_request(int client)
         } else {
             //显示目录
             char query_param[256];
-            snprintf(query_param, 256, "dir=%s", path);
-            execute_cgi(client, "filebrowser/index.py", method, query_param, param);
+            snprintf(query_param, 256, "prefix=%s&url=%s", prefix_dir, url);
+            execute_cgi(client, "./showdir.py", method, query_param, param);
         }
     }
   } else if (strcasecmp(method, "PUT") == 0) {

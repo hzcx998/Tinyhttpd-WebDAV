@@ -10,11 +10,11 @@ import socket
 # Enable CGI error reporting
 cgitb.enable()
 
-web_dir = "htdocs"
-
 # Define the directory to list
 form = cgi.FieldStorage()
-directory = form.getvalue("dir", web_dir)
+prefix = form.getvalue("prefix", "htdocs")
+url = form.getvalue("url", "/")
+directory = prefix + "/" + url
 
 # Print the HTTP header
 print("Content-Type: text/html; charset=UTF-8")
@@ -24,11 +24,11 @@ print()
 print("<!DOCTYPE HTML PUBLIC '-//W3C//DTD HTML 3.2 Final//EN'>")
 print("<html>")
 print("    <head>")
-print(f"        <title>Index of {directory}</title>")
+print(f"        <title>Index of {url}</title>")
 print("        <meta charset='UTF-8'>")
 print("    </head>")
 print("    <body>")
-print(f"        <h1>Index of {directory}</h1>")
+print(f"        <h1>Index of {url}</h1>")
 print("        <table>")
 
 # Print the table headers
@@ -45,12 +45,16 @@ print("            <tr>")
 print("                <th colspan='5'><hr></th>")
 print("            </tr>")
 
+if len(url) > 1:
+    url = url.rstrip('/')
+
+url_parent = os.path.dirname(url)
 # Print the parent directory link
 print("            <tr>")
 print("                <td valign='top'>")
 print("                    <img src='/icons/back.gif' alt='[PARENTDIR]'>")
 print("                </td>")
-print("                <td><a href='/'>Parent Directory</a></td>")
+print(f"                <td><a href='{url_parent}'>Parent Directory</a></td>")
 print("                <td>&nbsp;</td>")
 print("                <td align='right'>- </td>")
 print("                <td>&nbsp;</td>")
