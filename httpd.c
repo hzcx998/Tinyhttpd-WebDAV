@@ -253,6 +253,7 @@ static const MimeMap mime_types[] = {
 
 // 根据文件扩展名获取MIME类型
 void get_mime_type_by_extension(const char *filename, char *buf, size_t buf_size) {
+    int i;
     const char *ext = strrchr(filename, '.');
     if (!ext) {
         strncpy(buf, "application/octet-stream", buf_size);  // 未知类型默认值
@@ -260,7 +261,7 @@ void get_mime_type_by_extension(const char *filename, char *buf, size_t buf_size
         return;
     }
 
-    for (int i = 0; mime_types[i].extension != NULL; ++i) {
+    for (i = 0; mime_types[i].extension != NULL; ++i) {
         if (strcmp(ext, mime_types[i].extension) == 0) {
             strncpy(buf, mime_types[i].mime_type, buf_size);
             buf[buf_size - 1] = '\0';  // 确保字符串以 NULL 结尾
@@ -361,7 +362,7 @@ int generate_propfind_response_body(struct stat *statbuf, char *xml_response, in
 }
 
 // 假设有一个函数来获取文件或目录的属性
-int generate_propfind_response(char *xml_response, int response_len, const char *path, char *url) {
+int generate_propfind_response(char *xml_response, int response_len, const char *path, const char *url) {
   struct stat statbuf;
   int offset = 0;
 
@@ -386,15 +387,14 @@ int generate_propfind_response(char *xml_response, int response_len, const char 
 #define PROP_CHUNK 2048
 #define EXPAND_SIZE (PROP_CHUNK * 4)
 
-static int propfind_dir(int client, const char *filepath, char *url)
+static int propfind_dir(int client, const char *filepath, const char *url)
 {
   DIR *dir;
   struct dirent *entry;
   char entry_path[1024];
   char entry_url[1024];
   char *response;
-  size_t response_len = EXPAND_SIZE;
-  char mtime[64];
+  int response_len = EXPAND_SIZE;
   int offset = 0;
   struct stat statbuf;
 
@@ -474,7 +474,7 @@ void handle_propfind(int client, const char *filepath, const char *url, char *he
     printf("Method: PROPFIND %s\n", filepath);
 
     // 检查是否有长度参数，如果有就读取剩余的，没有就不读取。
-    const char depth[16];
+    char depth[16];
     if (get_header_value(header, "Depth", depth, sizeof(depth))) {
         strcpy(depth, "infinity"); // 默认"infinity"
     }
@@ -562,7 +562,7 @@ int remove_directory(const char *path) {
     return rmdir(path);
 }
 
-void handle_delete(int client, const char *path, char *header) {
+void handle_delete(int client, const char *path) {
     struct stat statbuf;
 
     printf("Method: DELETE %s\n", path);
@@ -592,7 +592,7 @@ void handle_delete(int client, const char *path, char *header) {
 }
 
 
-int handle_mkcol(int client, const char *path, char *header) {
+int handle_mkcol(int client, const char *path) {
     
     printf("Method: MKCOL %s\n", path);
 
@@ -636,7 +636,7 @@ char* extract_path_from_url(const char *url) {
     return NULL; // 如果没有找到路径，返回 NULL
 }
 
-const int parse_dest_path(const char *header, char *buf, int buflen) {
+int parse_dest_path(const char *header, char *buf, int buflen) {
     char dest[256] = {0};
     if (get_header_value(header, "Destination", dest, sizeof(dest))) {
         return -1;
@@ -655,7 +655,6 @@ int handle_move(int client, const char *path, char *header) {
     printf("Method: MOVE %s\n", path);
 
     /* 获取参数 */
-    int numchars;
     char dest[256] = {0};
     if (parse_dest_path(header, dest, sizeof(dest))) {
         send_response(client, "400 Bad Request", "text/plain", "No file destination");
@@ -675,6 +674,39 @@ int handle_move(int client, const char *path, char *header) {
         return -1;
     }
 
+    return 0;
+}
+
+static int copy_file(const char *src, const char *dest, mode_t mode) {
+    int src_fd = open(src, O_RDONLY);
+    if (src_fd == -1) {
+        return -1;
+    }
+
+    int dest_fd = open(dest, O_WRONLY | O_CREAT | O_TRUNC, mode);
+    if (dest_fd == -1) {
+        close(src_fd);
+        return -1;
+    }
+
+    char buffer[4096];
+    ssize_t bytes_read;
+    while ((bytes_read = read(src_fd, buffer, sizeof(buffer))) > 0) {
+        if (write(dest_fd, buffer, bytes_read) != bytes_read) {
+            close(src_fd);
+            close(dest_fd);
+            return -1;
+        }
+    }
+
+    if (bytes_read == -1) {
+        close(src_fd);
+        close(dest_fd);
+        return -1;
+    }
+
+    close(src_fd);
+    close(dest_fd);
     return 0;
 }
 
@@ -732,39 +764,6 @@ int copy_directory(const char *src, const char *dest) {
     return ret;
 }
 
-int copy_file(const char *src, const char *dest, mode_t mode) {
-    int src_fd = open(src, O_RDONLY);
-    if (src_fd == -1) {
-        return -1;
-    }
-
-    int dest_fd = open(dest, O_WRONLY | O_CREAT | O_TRUNC, mode);
-    if (dest_fd == -1) {
-        close(src_fd);
-        return -1;
-    }
-
-    char buffer[4096];
-    ssize_t bytes_read;
-    while ((bytes_read = read(src_fd, buffer, sizeof(buffer))) > 0) {
-        if (write(dest_fd, buffer, bytes_read) != bytes_read) {
-            close(src_fd);
-            close(dest_fd);
-            return -1;
-        }
-    }
-
-    if (bytes_read == -1) {
-        close(src_fd);
-        close(dest_fd);
-        return -1;
-    }
-
-    close(src_fd);
-    close(dest_fd);
-    return 0;
-}
-
 int handle_copy(int client, const char *path, char *header) {
     
     printf("Method: COPY %s\n", path);
@@ -784,7 +783,7 @@ int handle_copy(int client, const char *path, char *header) {
     struct stat file_stat;
     if (stat(path, &file_stat) == -1) {
         send_response(client, "500 Internal Server Error", "text/plain", "Failed to stat source file");
-        return;
+        return -1;
     }
 
     if (S_ISDIR(file_stat.st_mode)) {
@@ -793,7 +792,7 @@ int handle_copy(int client, const char *path, char *header) {
             // 设置目标目录的权限
             if (chmod(dest, file_stat.st_mode) == -1) {
                 send_response(client, "500 Internal Server Error", "text/plain", "Failed to set directory permissions");
-                return;
+                return -1;
             }
             send_response(client, "200 OK", "text/plain", "Directory copied successfully");
         } else {
@@ -860,7 +859,6 @@ void handle_options(int client) {
 void accept_request(int client)
 {
  char buf[1024];
- int numchars;
  char method[255];
  char url[255];
  char path[512];
@@ -1012,9 +1010,9 @@ void accept_request(int client)
     }
    
    //S_IXUSR, S_IXGRP, S_IXOTH三者可以参读《TLPI》P295
-  if ((st.st_mode & S_IXUSR) ||       
+  if (((st.st_mode & S_IXUSR) ||       
       (st.st_mode & S_IXGRP) ||
-      (st.st_mode & S_IXOTH) && !is_webdav) {
+      (st.st_mode & S_IXOTH)) && (!is_webdav)) {
         cgi = 1;
     //如果这个文件是一个可执行文件，不论是属于用户/组/其他这三者类型的，就将 cgi 标志变量置一
   }
@@ -1029,8 +1027,8 @@ void accept_request(int client)
             execute_cgi(client, path, method, query_string, param);
         } else {
             //显示目录
-            char query_param[256];
-            snprintf(query_param, 256, "prefix=%s&url=%s", prefix_dir, url);
+            char query_param[256+64];
+            snprintf(query_param, sizeof(query_param), "prefix=%s&url=%s", prefix_dir, url);
             execute_cgi(client, "./showdir.py", method, query_param, param);
         }
     }
@@ -1039,9 +1037,9 @@ void accept_request(int client)
   } else if (strcasecmp(method, "PROPFIND") == 0) {
     handle_propfind(client, path, url, param);
   } else if (strcasecmp(method, "DELETE") == 0) {
-    handle_delete(client, path, param);
+    handle_delete(client, path);
   } else if (strcasecmp(method, "MKCOL") == 0) {
-    handle_mkcol(client, path, param);
+    handle_mkcol(client, path);
   } else if (strcasecmp(method, "MOVE") == 0) {
     handle_move(client, path, param);
   } else if (strcasecmp(method, "COPY") == 0) {
@@ -1345,8 +1343,6 @@ void not_found(int client)
 void serve_file(int client, const char *filename)
 {
  FILE *resource = NULL;
- int numchars = 1;
- char buf[1024];
 
   printf("Method: GET %s\n", filename);
 
@@ -1402,7 +1398,7 @@ int startup(u_short *port)
  //如果调用 bind 后端口号仍然是0，则手动调用getsockname()获取端口号
  if (*port == 0)  /* if dynamically allocating a port */
  {
-  int namelen = sizeof(name);
+  socklen_t namelen = sizeof(name);
   //getsockname()包含于<sys/socker.h>中，参读《TLPI》P1263
   //调用getsockname()获取系统给 httpd 这个 socket 随机分配的端口号
   if (getsockname(httpd, (struct sockaddr *)&name, &namelen) == -1)
@@ -1449,7 +1445,7 @@ static int server_sock = -1;
 
 void handle_term(int signo)
 {
-  printf("term httpd sock %d\n", server_sock);
+  printf("term signo %d httpd sock %d\n", signo, server_sock);
 
   // close sock before exit
   shutdown(server_sock, SHUT_RDWR);
@@ -1462,7 +1458,7 @@ int main(void)
  int client_sock = -1;
  //sockaddr_in 是 IPV4的套接字地址结构。定义在<netinet/in.h>,参读《TLPI》P1202
  struct sockaddr_in client_name;
- int client_name_len = sizeof(client_name);
+ socklen_t client_name_len = sizeof(client_name);
  //pthread_t newthread;
 
  server_sock = startup(&port);
