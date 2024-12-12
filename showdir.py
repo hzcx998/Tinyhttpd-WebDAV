@@ -14,6 +14,7 @@ cgitb.enable()
 form = cgi.FieldStorage()
 prefix = form.getvalue("prefix", "htdocs")
 url = form.getvalue("url", "/")
+server_port = form.getvalue("port", "80")
 directory = prefix + "/" + url
 
 # Print the HTTP header
@@ -109,7 +110,6 @@ print("        </table>")
 # Dynamically get server information
 server_signature = os.environ.get('SERVER_SIGNATURE', 'tinyhttpd/0.1.0')
 server_address = socket.gethostbyname(socket.gethostname())
-server_port = os.environ.get('SERVER_PORT', '80')
 
 print(f"        <address>{server_signature} at {server_address} Port {server_port}</address>")
 print("    </body>")

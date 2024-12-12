@@ -1035,7 +1035,8 @@ void accept_request(int client)
         } else {
             //显示目录
             char query_param[256+64];
-            snprintf(query_param, sizeof(query_param), "prefix=%s&url=%s", prefix_dir, url);
+            snprintf(query_param, sizeof(query_param), "port=%d&prefix=%s&url=%s",
+                server_port, prefix_dir, url);
             execute_cgi(client, "./showdir.py", method, query_param, param);
         }
     }
