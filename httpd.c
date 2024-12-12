@@ -36,9 +36,13 @@
 #include <signal.h>
 #include <errno.h>
 #include <sys/fcntl.h>
+#include <getopt.h>
 
 // 使用多线程处理请求，当需要大量服务时可以考虑开启,0/1
 #define USE_MULTI_THREAD_REQUEST 1
+
+// 默认端口号
+#define DEFAULT_PORT 8080
 
 #if USE_MULTI_THREAD_REQUEST == 1
 #include <pthread.h>
@@ -83,7 +87,7 @@ char *icons_root = "icons";
 // 默认浏览器索引文件
 char *index_file = "index.html";
 
-static u_short port = 8080;
+static u_short server_port = DEFAULT_PORT;
 
 // 发送HTTP响应
 void send_response(int client, const char *status, const char *content_type, const char *body) {
@@ -1478,8 +1482,9 @@ void *accept_request_thread(void *arg)
 }
 #endif
 
-int main(void)
+int main(int argc, char *argv[])
 {
+ int opt;
  long client_sock = -1;
  //sockaddr_in 是 IPV4的套接字地址结构。定义在<netinet/in.h>,参读《TLPI》P1202
  struct sockaddr_in client_name;
@@ -1488,8 +1493,24 @@ int main(void)
  pthread_t newthread;
 #endif
 
- server_sock = startup(&port);
- printf("httpd running on port %d\n", port);
+    // 解析命令行参数
+    while ((opt = getopt(argc, argv, "p:")) != -1) {
+        switch (opt) {
+            case 'p':
+                server_port = atoi(optarg);
+                if (server_port <= 0) {
+                    fprintf(stderr, "Invalid port number\n");
+                    exit(EXIT_FAILURE);
+                }
+                break;
+            default: /* '?' */
+                fprintf(stderr, "Usage: %s [-p port]\n", argv[0]);
+                exit(EXIT_FAILURE);
+        }
+    }
+
+ server_sock = startup(&server_port);
+ printf("httpd running on port %d\n", server_port);
 
   signal(SIGTERM, handle_term);
   signal(SIGINT, handle_term);
