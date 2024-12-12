@@ -29,7 +29,6 @@
 #include <strings.h>
 #include <string.h>
 #include <sys/stat.h>
-//#include <pthread.h>
 #include <sys/wait.h>
 #include <stdlib.h>
 #include <time.h>
@@ -37,6 +36,13 @@
 #include <signal.h>
 #include <errno.h>
 #include <sys/fcntl.h>
+
+// 使用多线程处理请求，当需要大量服务时可以考虑开启,0/1
+#define USE_MULTI_THREAD_REQUEST 1
+
+#if USE_MULTI_THREAD_REQUEST == 1
+#include <pthread.h>
+#endif
 
 #define ISspace(x) isspace((int)(x))
 
@@ -124,9 +130,6 @@ int read_header(int client, char *buf, int len) {
     int numchars;
     char line[1024];
     int total_read = 0;
-
-    // 初始化缓冲区
-    memset(buf, 0, len);
 
     // 读取请求头
     while ((numchars = get_line(client, line, sizeof(line))) > 0) {
@@ -858,7 +861,7 @@ void handle_options(int client) {
 /**********************************************************************/
 void accept_request(int client)
 {
- char buf[1024];
+ char buf[1024] = {0};
  char method[255];
  char url[255];
  char path[512];
@@ -879,7 +882,7 @@ void accept_request(int client)
     bad_request(client);
     return;
  }
- 
+
  // skip newline
  param = strstr(buf, "\n");
  while (*param == '\n' || *param == '\r')
@@ -1016,7 +1019,7 @@ void accept_request(int client)
         cgi = 1;
     //如果这个文件是一个可执行文件，不论是属于用户/组/其他这三者类型的，就将 cgi 标志变量置一
   }
-  
+
   if (strcasecmp(method, "GET") == 0 || strcasecmp(method, "POST") == 0) {
     // GET方法可能有参数，就是CGI，没有就是普通的文件返回。POST一定是有CGI的。
     if (!cgi || is_webdav) { //如果不需要 cgi 机制的
@@ -1130,7 +1133,7 @@ void error_die(const char *sc)
 void execute_cgi(int client, const char *path,
                  const char *method, const char *query_string, char *header)
 {
- char buf[1024];
+ char buf[32];
  int cgi_output[2];
  int cgi_input[2];
  pid_t pid;
@@ -1206,6 +1209,9 @@ void execute_cgi(int client, const char *path,
    sprintf(length_env, "CONTENT_LENGTH=%d", content_length);
    putenv(length_env);
   }
+  
+  // 在执行程序前先关闭client sock连接
+  close(client);
 
   //execl()包含于<unistd.h>中，参读《TLPI》P567
   //最后将子进程替换成另一个进程并执行 cgi 脚本
@@ -1224,9 +1230,15 @@ void execute_cgi(int client, const char *path,
     write(cgi_input[1], &c, 1);
    }
    
-  //然后从 cgi_output 管道中读子进程的输出，并发送到客户端去
-  while (read(cgi_output[0], &c, 1) > 0)
-   send(client, &c, 1, 0);
+    char pipebuf[2048];
+    //然后从 cgi_output 管道中读子进程的输出，并发送到客户端去
+    ssize_t bytes_read;
+    while ((bytes_read = read(cgi_output[0], pipebuf, sizeof(pipebuf) - 1)) > 0) {
+        if (send(client, pipebuf, bytes_read, 0) <= 0) {
+            printf("err: send pipe buf failed on client %d!\n", client);
+            break;
+        }
+    }
 
   //关闭管道
   close(cgi_output[0]);
@@ -1453,19 +1465,35 @@ void handle_term(int signo)
   exit(0);
 }
 
+void handle_sigpipe(int signo)
+{
+  printf("err: sigpipe %d happend!\n", signo);
+}
+
+#if USE_MULTI_THREAD_REQUEST == 1
+void *accept_request_thread(void *arg)
+{
+    accept_request((long)arg);
+    return NULL;
+}
+#endif
+
 int main(void)
 {
- int client_sock = -1;
+ long client_sock = -1;
  //sockaddr_in 是 IPV4的套接字地址结构。定义在<netinet/in.h>,参读《TLPI》P1202
  struct sockaddr_in client_name;
  socklen_t client_name_len = sizeof(client_name);
- //pthread_t newthread;
+#if USE_MULTI_THREAD_REQUEST == 1
+ pthread_t newthread;
+#endif
 
  server_sock = startup(&port);
  printf("httpd running on port %d\n", port);
 
   signal(SIGTERM, handle_term);
   signal(SIGINT, handle_term);
+  signal(SIGPIPE, handle_sigpipe);
 
  while (1)
  {
@@ -1475,9 +1503,13 @@ int main(void)
                        &client_name_len);
   if (client_sock == -1)
    error_die("accept");
+#if USE_MULTI_THREAD_REQUEST == 1
+  if (pthread_create(&newthread , NULL, accept_request_thread, (void *)client_sock) != 0)
+   perror("pthread_create");
+//   printf("info: create thread %ld to handle request client %ld\n", newthread, client_sock);
+#else
   accept_request(client_sock);
- /*if (pthread_create(&newthread , NULL, accept_request, client_sock) != 0)
-   perror("pthread_create");*/
+#endif
  }
 
  close(server_sock);
