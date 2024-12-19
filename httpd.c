@@ -168,7 +168,11 @@ void unimplemented(int);
 
 // 使能目录查看功能
 int enable_indexes = 1;
-const char *showdir_cgi = "./showdir.py"; // ./showdir.py
+#if defined(__UNIX__)
+const char *showdir_cgi = "./cgi/showdir.cgi"; // showdir.py
+#elif defined(__NXOS__)
+const char *showdir_cgi = "/System/Applications/showdir.xapp";
+#endif
 
 // 浏览器服务目录，可修改为htdocs
 char *browser_root = "webdav";

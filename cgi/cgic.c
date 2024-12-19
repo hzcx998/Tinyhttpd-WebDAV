@@ -28,8 +28,11 @@
 #include <ctype.h>
 #include <stdlib.h>
 #include <time.h>
+
+#if !defined(__NXOS__)
 #include <sys/types.h>
 #include <sys/stat.h>
+#endif
 
 #ifdef WIN32
 #include <io.h>
@@ -37,6 +40,8 @@
 /* cgic 2.01 */
 #include <fcntl.h>
 
+#elif defined(__NXOS__)
+#include <nxos.h>
 #else
 #include <unistd.h>
 #endif /* WIN32 */
@@ -634,7 +639,7 @@ static cgiParseResultType getTempFile(FILE **tFile)
 		length is strlen(cgiTempDir) + a short unique pattern. */
 	char tfileName[1024];
 	
-#ifndef WIN32
+#if !defined(WIN32) && !defined(__NXOS__)
 	/* Unix. Use the robust 'mkstemp' function to create
 		a temporary file that is truly unique, with
 		permissions that are truly safe. The 
@@ -662,7 +667,7 @@ static cgiParseResultType getTempFile(FILE **tFile)
 	}
 #endif
 	*tFile = fopen(tfileName, "w+b");
-	unlink(tfileName);
+	remove(tfileName);
 	return cgiParseSuccess;
 }
 
@@ -2025,7 +2030,7 @@ error:
 	/* If this function is not defined in your system,
 		you must substitute the appropriate 
 		file-deletion function. */
-	unlink(filename);
+	remove(filename);
 	return cgiEnvironmentIO;
 }
 

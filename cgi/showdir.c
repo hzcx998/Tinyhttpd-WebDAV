@@ -1,14 +1,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <dirent.h>
-#include <sys/stat.h>
-#include <time.h>
 #include <ctype.h>
 #include <cgic.h>
+#include <time.h>
+#if defined(__UNIX__)
+#include <dirent.h>
+#include <sys/stat.h>
+#elif defined(__NXOS__)
+#include <nxos.h>
+#else
+#error unknown os!
+#endif
 
 // Function to get the icon based on file extension
 const char* get_icon(const char* filename) {
+#if defined(__UNIX__)
     struct stat statbuf;
     if (stat(filename, &statbuf) == -1) {
         return "/icons/unknown.gif";
@@ -17,7 +24,15 @@ const char* get_icon(const char* filename) {
     if (S_ISDIR(statbuf.st_mode)) {
         return "/icons/folder.gif";
     }
-
+#elif defined(__NXOS__)
+    NX_FileStatInfo statbuf;
+    if (NX_FileGetStatFromPath(filename, &statbuf) != NX_EOK) {
+        return "/icons/unknown.gif";
+    }
+    if (NX_FILE_IS_DIR(statbuf.mode)) {
+        return "/icons/folder.gif";
+    }
+#endif
     const char* ext = strrchr(filename, '.');
     if (!ext) {
         return "/icons/unknown.gif";
@@ -117,6 +132,7 @@ int cgiMain() {
     strcpy(prefix, cgiGetParam("prefix", "htdocs"));
     snprintf(rootdir, sizeof(rootdir), "%s%s", prefix, cgiGetParam("url", "/"));
 
+#if defined(__UNIX__)
     // Get the list of files and directories
     DIR* dir;
     struct dirent* entry;
@@ -150,7 +166,46 @@ int cgiMain() {
         printf("            </tr>\n");
     }
     closedir(dir);
+#elif defined(__NXOS__)
+    // Get the list of files and directories
+    NX_Solt dir;
+    NX_Dirent entry;
+    
+    if ((dir = NX_DirOpen(rootdir)) == NX_SOLT_INVALID_VALUE) {
+        perror("opendir");
+        exit(EXIT_FAILURE);
+    }
 
+    while ((NX_DirRead(dir, &entry)) == NX_EOK) {
+        char filepath[1024];
+        snprintf(filepath, sizeof(filepath), "%s%s", rootdir, entry.name);
+        NX_FileStatInfo statbuf;
+        if (NX_FileGetStatFromPath(filepath, &statbuf) != NX_EOK) {
+            NX_DirClose(dir);
+            return -1; 
+        }
+        
+        char last_modified[256];
+        strftime(last_modified, sizeof(last_modified), "%Y-%m-%d %H:%M", localtime((const time_t *)&statbuf.mtime));
+        const char* icon = get_icon(filepath);
+        printf("            <tr>\n");
+        printf("                <td valign='top'><img src='%s' alt='[FILE]'></td>\n", icon);
+        if (NX_FILE_IS_DIR(statbuf.mode)) {
+            printf("                <td><a href='%s/'>%s/</a></td>\n", entry.name, entry.name);
+        } else {
+            printf("                <td><a href='%s'>%s</a></td>\n", entry.name, entry.name);
+        }
+        printf("                <td align='right'>%s</td>\n", last_modified);
+        if (NX_FILE_IS_DIR(statbuf.mode)) {
+            printf("                <td align='right'>- </td>\n");
+        } else {
+            printf("                <td align='right'>%ld</td>\n", statbuf.size);
+        }
+        printf("                <td>&nbsp;</td>\n");
+        printf("            </tr>\n");
+    }
+    NX_DirClose(dir);
+#endif
     // Print the footer
     printf("            <tr>\n");
     printf("                <th colspan='5'><hr></th>\n");

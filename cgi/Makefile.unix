@@ -1,0 +1,5 @@
+all:
+	gcc -W -Wall -I./ -D__UNIX__ -o showdir.cgi showdir.c cgic.c
+
+clean:
+	rm showdir.cgi
