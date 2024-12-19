@@ -19,33 +19,121 @@
      
      注释者： github: cbsheng
  */
+
+// #ifndef __NXOS__
+// #define __NXOS__
+// #endif
+
 #include <stdio.h>
+#include <ctype.h>
+#include <strings.h>
+#include <string.h>
+#include <stdlib.h>
+#include <time.h>
+#include <signal.h>
+#include <errno.h>
+
+#if defined(__UNIX__)
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
-#include <ctype.h>
-#include <strings.h>
-#include <string.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
-#include <stdlib.h>
-#include <time.h>
 #include <dirent.h>
-#include <signal.h>
-#include <errno.h>
 #include <sys/fcntl.h>
-#include <getopt.h>
 
+#define sock_close(sock) close(sock)
+#define IS_DIR(mode) S_ISDIR(mode)
+#define IS_EXEC(mode) (((mode) & S_IXUSR) || ((mode) & S_IXGRP) || ((mode) & S_IXOTH))
+
+
+/* config */
 // 使用多线程处理请求，当需要大量服务时可以考虑开启,0/1
 #define USE_MULTI_THREAD_REQUEST 1
+#define USE_CMD_PORT 1
+#define USE_AUTO_PORT 1
+#define USE_PIPE_SIGNAL 1
+
+#elif defined(__NXOS__)
+#include <nxos.h>
+#include <netsocket.h>
+
+// net api wrapper
+#define socket(domain, type, protocol) NET_Socket(domain, type, protocol)
+#define sock_close(sock) NET_Close(sock)
+#define bind(sock, addr, addrlen) NET_Bind(sock, addr, addrlen)
+#define listen(sock, backlog) NET_Listen(sock, backlog)
+#define accept(sock, addr, addrlen) NET_Accept(sock, addr, addrlen)
+#define send(sock, buf, len, flags) NET_Send(sock, (void *)(buf), len, flags)
+#define recv(sock, buf, len, flags) NET_Recv(sock, (void *)(buf), len, flags)
+#define shutdown(sock, how) NET_Shutdown(sock, how)
+
+#define IS_DIR(mode) NX_FILE_IS_DIR(mode)
+#define IS_EXEC(mode) ((mode) & NX_FILE_MODE_EXEC)
+
+/* Flags we can use with send and recv. */
+#define MSG_PEEK       0x01    /* Peeks at an incoming message */
+#define MSG_WAITALL    0x02    /* Unimplemented: Requests that the function block until the full amount of data requested can be returned */
+#define MSG_OOB        0x04    /* Unimplemented: Requests out-of-band data. The significance and semantics of out-of-band data are protocol-specific */
+#define MSG_DONTWAIT   0x08    /* Nonblocking i/o for this operation only */
+#define MSG_MORE       0x10    /* Sender will send more */
+#define MSG_NOSIGNAL   0x20    /* Uninmplemented: Requests not to send the SIGPIPE signal if an attempt to send is made on a stream-oriented socket that is no longer connected. */
+
+#define PF_INET         AF_INET
+#define PF_INET6        AF_INET6
+#define PF_UNSPEC       AF_UNSPEC
+
+#define ENDIAN_CONVERTER_LONGLONG(n)    ((((n) & 0xFF) << 56) | (((n) & 0xFF00) << 40) | (((n) & 0xFF0000) << 24) | (((n) & 0xFF000000) << 8) | (((n) & 0xFF00000000) >> 8) | (((n) & 0xFF0000000000) >> 24) | (((n) & 0xFF000000000000) >> 40) | (((n) & 0xFF00000000000000) >> 56))
+#define ENDIAN_CONVERTER_UINT(n)        ((((n) & 0xFF) << 24) | (((n) & 0xFF00) << 8) | (((n) & 0xFF0000) >> 8) | (((n) & 0xFF000000) >> 24))
+#define ENDIAN_CONVERTER_USHORT(n)	    ((((n) & 0xFF) << 8)  | (((n) & 0xFF00) >> 8))
+#define htonll(n)   ENDIAN_CONVERTER_LONGLONG(n) 
+#define htonl(n)    ENDIAN_CONVERTER_UINT(n)
+#define htons(n)    ENDIAN_CONVERTER_USHORT(n)
+
+
+/** 255.255.255.255 */
+#define IPADDR_NONE         ((u32_t)0xffffffffUL)
+/** 127.0.0.1 */
+#define IPADDR_LOOPBACK     ((u32_t)0x7f000001UL)
+/** 0.0.0.0 */
+#define IPADDR_ANY          ((u32_t)0x00000000UL)
+/** 255.255.255.255 */
+#define IPADDR_BROADCAST    ((u32_t)0xffffffffUL)
+
+/** 255.255.255.255 */
+#define INADDR_NONE         IPADDR_NONE
+/** 127.0.0.1 */
+#define INADDR_LOOPBACK     IPADDR_LOOPBACK
+/** 0.0.0.0 */
+#define INADDR_ANY          IPADDR_ANY
+/** 255.255.255.255 */
+#define INADDR_BROADCAST    IPADDR_BROADCAST
+
+/* config */
+// 使用多线程处理请求，当需要大量服务时可以考虑开启,0/1
+#define USE_MULTI_THREAD_REQUEST 0
+#define USE_CMD_PORT 0
+#define USE_AUTO_PORT 0
+#define USE_PIPE_SIGNAL 0
+#else
+#error unknown os!
+#endif
+
+#if USE_CMD_PORT == 1
+#include <getopt.h>
+#endif
 
 // 默认端口号
 #define DEFAULT_PORT 8080
 
 #if USE_MULTI_THREAD_REQUEST == 1
+#if defined(__NXOS__)
+// nothing
+#elif defined(__UNIX__)
 #include <pthread.h>
+#endif
 #endif
 
 #define ISspace(x) isspace((int)(x))
@@ -55,7 +143,11 @@
 
 void accept_request(int);
 void bad_request(int);
+#if defined(__UNIX__)
 void cat(int, FILE *);
+#elif defined(__NXOS__)
+void cat(int, NX_Solt);
+#endif
 void cannot_execute(int);
 void error_die(const char *);
 void execute_cgi(int, const char *, const char *, const char *, char *header);
@@ -63,7 +155,7 @@ int get_line(int, char *, int);
 void headers(int, const char *);
 void not_found(int);
 void serve_file(int, const char *);
-int startup(u_short *);
+int startup(unsigned short *);
 void unimplemented(int);
 
 /**
@@ -76,6 +168,7 @@ void unimplemented(int);
 
 // 使能目录查看功能
 int enable_indexes = 1;
+const char *showdir_cgi = "./showdir.py"; // ./showdir.py
 
 // 浏览器服务目录，可修改为htdocs
 char *browser_root = "webdav";
@@ -87,7 +180,7 @@ char *icons_root = "icons";
 // 默认浏览器索引文件
 char *index_file = "index.html";
 
-static u_short server_port = DEFAULT_PORT;
+static unsigned short server_port = DEFAULT_PORT;
 
 // 发送HTTP响应
 void send_response(int client, const char *status, const char *content_type, const char *body) {
@@ -282,8 +375,13 @@ void get_mime_type_by_extension(const char *filename, char *buf, size_t buf_size
 
 // 根据目录路径获取MIME类型
 void get_mime_type_for_directory(const char *path, char *buf, size_t buf_size) {
+#if defined(__UNIX__)
     struct stat statbuf;
-    if (stat(path, &statbuf) == 0 && S_ISDIR(statbuf.st_mode)) {
+    if (stat(path, &statbuf) == 0 && IS_DIR(statbuf.st_mode)) {
+#elif defined(__NXOS__)
+    NX_FileStatInfo statbuf;
+    if (NX_FileGetStatFromPath(path, &statbuf) == NX_EOK && NX_FILE_IS_DIR(statbuf.mode)) {
+#endif
         strncpy(buf, "httpd/unix-directory", buf_size);  // 目录的MIME类型
         buf[buf_size - 1] = '\0';  // 确保字符串以 NULL 结尾
     }
@@ -302,11 +400,25 @@ void get_mime_type(const char *filepath, char *buf, size_t buf_size) {
     buf[buf_size - 1] = '\0';  // 确保字符串以 NULL 结尾
 }
 
+#if defined(__UNIX__)
 int generate_propfind_response_body(struct stat *statbuf, char *xml_response, int response_len, int offset, const char *path) {
+    time_t st_mtim = statbuf->st_mtime;
+    time_t st_ctim = statbuf->st_ctime;
+    ino_t st_ino = statbuf->st_ino;
+    mode_t st_mode = statbuf->st_mode;
+    off_t st_size = statbuf->st_size;
+#elif defined(__NXOS__)
+int generate_propfind_response_body(NX_FileStatInfo *statbuf, char *xml_response, int response_len, int offset, const char *path) {
+    time_t st_mtim = statbuf->mtime;
+    time_t st_ctim = statbuf->ctime;
+    NX_U32 st_ino = 0; // unsupport
+    NX_U32 st_mode = statbuf->mode;
+    NX_Size st_size = statbuf->size;
+#endif
 
   // 添加资源类型、创建日期、最后修改日期、ETag等属性
   char time_buffer[256];
-  format_time(statbuf->st_mtime, time_buffer, sizeof(time_buffer));
+  format_time(st_mtim, time_buffer, sizeof(time_buffer));
   offset += snprintf(xml_response + offset, response_len - offset,
                       "<D:response>\n"
                       "<D:href>%s</D:href>\n"
@@ -315,7 +427,7 @@ int generate_propfind_response_body(struct stat *statbuf, char *xml_response, in
                       (path)); // 跳过路径的第一个字符，通常是 /
 
   // 检查是否是目录
-  if (S_ISDIR(statbuf->st_mode)) {
+  if (IS_DIR(st_mode)) {
       offset += snprintf(xml_response + offset, response_len - offset,
                           "<D:resourcetype><D:collection/></D:resourcetype>\n");
   } else {
@@ -327,15 +439,15 @@ int generate_propfind_response_body(struct stat *statbuf, char *xml_response, in
                       "<D:creationdate>%s</D:creationdate>\n"
                       "<D:getlastmodified>%s</D:getlastmodified>\n"
                       "<D:getetag>\"%lx-%lx\"</D:getetag>\n",
-                      ctime(&statbuf->st_ctime), // 创建时间
+                      ctime(&st_ctim), // 创建时间
                       time_buffer, // 最后修改时间
-                      statbuf->st_ino, // ETag第一部分：inode
-                      (unsigned long)statbuf->st_size); // ETag第二部分：文件大小
+                      st_ino, // ETag第一部分：inode
+                      (unsigned long)st_size); // ETag第二部分：文件大小
 
   // 添加文件大小
   offset += snprintf(xml_response + offset, response_len - offset,
                    "<D:getcontentlength>%ld</D:getcontentlength>\n",
-                   (long)statbuf->st_size);
+                   (long)st_size);
 
   // 添加锁支持
   offset += snprintf(xml_response + offset, response_len - offset,
@@ -370,12 +482,18 @@ int generate_propfind_response_body(struct stat *statbuf, char *xml_response, in
 
 // 假设有一个函数来获取文件或目录的属性
 int generate_propfind_response(char *xml_response, int response_len, const char *path, const char *url) {
-  struct stat statbuf;
   int offset = 0;
-
+#if defined(__UNIX__)
+  struct stat statbuf;
   if (stat(path, &statbuf) == -1) {
-    return -1; 
+    return -1;
   }
+#elif defined(__NXOS__)
+    NX_FileStatInfo statbuf;
+    if (NX_FileGetStatFromPath(path, &statbuf) != NX_EOK) {
+        return -1;
+    }
+#endif
 
   // 添加响应头
   offset += snprintf(xml_response, response_len,
@@ -394,6 +512,7 @@ int generate_propfind_response(char *xml_response, int response_len, const char 
 #define PROP_CHUNK 2048
 #define EXPAND_SIZE (PROP_CHUNK * 4)
 
+#if defined(__UNIX__)
 static int propfind_dir(int client, const char *filepath, const char *url)
 {
   DIR *dir;
@@ -472,9 +591,95 @@ static int propfind_dir(int client, const char *filepath, const char *url)
 
   return offset;
 }
+#elif defined(__NXOS__)
+static int propfind_dir(int client, const char *filepath, const char *url)
+{
+  NX_Solt dir;
+  NX_Dirent entry;
+  char entry_path[1024];
+  char entry_url[1024];
+  char *response;
+  int response_len = EXPAND_SIZE;
+  int offset = 0;
+  NX_FileStatInfo statbuf;
+
+  dir = NX_DirOpen(filepath);
+  if (dir == NX_SOLT_INVALID_VALUE) {
+      send_response(client, "500 Internal Server Error", "text/plain", "Failed to open directory");
+      return -1;
+  }
+
+  response = malloc(response_len);
+  if (!response) {
+    NX_DirClose(dir);
+    send_response(client, "500 Internal Server Error", "text/plain", "Failed to open directory");
+    return -1;
+  }
+
+  // 其他XML部分...
+  offset += sprintf(response, "<?xml version=\"1.0\" encoding=\"utf-8\" ?>\n<D:multistatus xmlns:D=\"DAV:\">\n");
+
+  while ((NX_DirRead(dir, &entry)) == NX_EOK) {
+      // 跳过 "." 和 ".."
+      if (strcmp(entry.name, ".") == 0 || strcmp(entry.name, "..") == 0) {
+          continue;
+      }
+
+      // 构建完整的文件路径
+      memset(entry_path, 0, sizeof(entry_path));
+      if (filepath[strlen(filepath) - 1] == '/') {
+        snprintf(entry_path, sizeof(entry_path), "%s%s", filepath, entry.name);
+      } else {
+        snprintf(entry_path, sizeof(entry_path), "%s/%s", filepath, entry.name);
+      }
+      
+      memset(entry_url, 0, sizeof(entry_url));
+      if (url[strlen(url) - 1] == '/') {
+        snprintf(entry_url, sizeof(entry_url), "%s%s", url, entry.name);
+      } else {
+        snprintf(entry_url, sizeof(entry_url), "%s/%s", url, entry.name);
+      }
+
+      if (NX_FileGetStatFromPath(entry_path, &statbuf) != NX_EOK) {
+        NX_DirClose(dir);
+        free(response);
+        send_response(client, "500 Internal Server Error", "text/plain", "File not exist");
+        return -1; 
+      }
+
+      // 获取文件状态
+      offset = generate_propfind_response_body(&statbuf, response, response_len, offset, entry_url);
+      // 扩展响应内存
+      if (offset + PROP_CHUNK > response_len) {
+        // printf("expand , response len %d, off %d\n", response_len, offset);
+        response = realloc(response, response_len + EXPAND_SIZE);
+        if (!response) {
+            NX_DirClose(dir);
+            free(response);
+            send_response(client, "500 Internal Server Error", "text/plain", "No enough memory");
+            return -1;
+        }
+        response_len += EXPAND_SIZE;
+      }
+  }
+  
+  offset += sprintf(response + offset, "</D:multistatus>");
+  send_response(client, "207 Multi-Status", "application/xml", response);
+  free(response);
+  NX_DirClose(dir);
+
+  return offset;
+}
+#endif
 
 void handle_propfind(int client, const char *filepath, const char *url, char *header) {
+#if defined(__UNIX__)
     struct stat file_stat;
+    mode_t st_mode;
+#elif defined(__NXOS__)
+    NX_FileStatInfo file_stat;
+    NX_U32 st_mode;
+#endif
     char response[PROP_CHUNK];
     memset(response, 0, sizeof(response));
 
@@ -510,13 +715,21 @@ void handle_propfind(int client, const char *filepath, const char *url, char *he
         return;
     }
 
+#if defined(__UNIX__)
     if (stat(filepath, &file_stat) == -1) {
         send_response(client, "404 Not Found", "text/plain", "File not found");
         return;
     }
-
+    st_mode = file_stat.st_mode;
+#elif defined(__NXOS__)
+    if (NX_FileGetStatFromPath(filepath, &file_stat) != NX_EOK) {
+        send_response(client, "404 Not Found", "text/plain", "File not found");
+        return;
+    }
+    st_mode = file_stat.mode;
+#endif
     // 只有depth为1才返回目录，不然依然返回文件信息
-    if (S_ISDIR(file_stat.st_mode) && strcmp(depth, "1") == 0) {
+    if (IS_DIR(st_mode) && strcmp(depth, "1") == 0) {
       if (propfind_dir(client, filepath, url) == -1)
         return;
     } else {
@@ -525,6 +738,7 @@ void handle_propfind(int client, const char *filepath, const char *url, char *he
     }
 }
 
+#if defined(__UNIX__)
 // 递归删除目录及其所有内容
 int remove_directory(const char *path) {
     DIR *dir;
@@ -548,7 +762,7 @@ int remove_directory(const char *path) {
             return -1; // 获取状态失败
         }
 
-        if (S_ISDIR(statbuf.st_mode)) {
+        if (IS_DIR(statbuf.st_mode)) {
             // 递归删除子目录
             if (remove_directory(full_path) == -1) {
                 closedir(dir);
@@ -580,7 +794,7 @@ void handle_delete(int client, const char *path) {
         return;
     }
 
-    if (S_ISDIR(statbuf.st_mode)) {
+    if (IS_DIR(statbuf.st_mode)) {
         // 删除目录
         if (remove_directory(path) == -1) {
             send_response(client, "500 Internal Server Error", "text/plain", "Remove directory failed");
@@ -598,11 +812,85 @@ void handle_delete(int client, const char *path) {
     send_response(client, "204 No Content", "text/plain", "Success to delete resource");
 }
 
+#elif defined(__NXOS__)
+// 递归删除目录及其所有内容
+int remove_directory(const char *path) {
+    NX_Solt dir;
+    NX_Dirent entry;
+    NX_FileStatInfo statbuf;
+    char full_path[1024];
+
+    if ((dir = NX_DirOpen(path)) == NX_SOLT_INVALID_VALUE) {
+        return -1; // 打开目录失败
+    }
+
+    while ((NX_DirRead(dir, &entry)) == NX_EOK) {
+        if (strcmp(entry.name, ".") == 0 || strcmp(entry.name, "..") == 0) {
+            continue; // 跳过 "." 和 ".."
+        }
+
+        snprintf(full_path, sizeof(full_path), "%s/%s", path, entry.name);
+
+        if (NX_FileGetStatFromPath(path, &statbuf) != NX_EOK) {
+            NX_DirClose(dir);
+            return -1; // 获取状态失败
+        }
+
+        if (IS_DIR(statbuf.mode)) {
+            // 递归删除子目录
+            if (remove_directory(full_path) == -1) {
+                NX_DirClose(dir);
+                return -1; // 子目录删除失败
+            }
+        } else {
+            // 删除文件
+            if (NX_FileDelete(full_path) == -1) {
+                NX_DirClose(dir);
+                return -1; // 文件删除失败
+            }
+        }
+    }
+
+    NX_DirClose(dir);
+
+    // 删除空目录
+    return NX_DirDelete(path);
+}
+
+void handle_delete(int client, const char *path) {
+    NX_FileStatInfo statbuf;
+
+    printf("Method: DELETE %s\n", path);
+
+    if (NX_FileGetStatFromPath(path, &statbuf) != NX_EOK) {
+        // 文件或目录不存在
+        send_response(client, "404 Not Found", "text/plain", "File not found");
+        return;
+    }
+
+    if (IS_DIR(statbuf.mode)) {
+        // 删除目录
+        if (remove_directory(path) == -1) {
+            send_response(client, "500 Internal Server Error", "text/plain", "Remove directory failed");
+            return;
+        }
+    } else {
+        // 删除文件
+        if (NX_FileDelete(path) == -1) {
+            send_response(client, "500 Internal Server Error", "text/plain", "Remove file failed");
+            return;
+        }
+    }
+
+    // 删除成功
+    send_response(client, "204 No Content", "text/plain", "Success to delete resource");
+}
+#endif
 
 int handle_mkcol(int client, const char *path) {
     
     printf("Method: MKCOL %s\n", path);
-
+#if defined(__UNIX__)
     // 尝试创建目录
     if (mkdir(path, 0755) == -1) {
         // 目录创建失败
@@ -616,7 +904,22 @@ int handle_mkcol(int client, const char *path) {
         }
         return -1;
     }
-
+#elif defined(__NXOS__)
+    NX_Error err = NX_DirCreate(path, 0755);
+    // 尝试创建目录
+    if (err != NX_EOK) {
+        // 目录创建失败
+        if (err == NX_ENORES) {
+            send_response(client, "405 Method Not Allowed", "text/plain", "The resource already exists.");
+        } else if (err == NX_EPERM || err == NX_EFAULT) {
+            send_response(client, "403 Forbidden", "text/plain", "Permission denied.");
+        } else {
+            char *err_msg = strerror(errno);
+            send_response(client, "500 Internal Server Error", "text/plain", err_msg);
+        }
+        return -1;
+    }
+#endif
     // 目录创建成功
     send_response(client, "201 Created", "text/plain", "Collection created successfully.");
     return 0;
@@ -669,12 +972,20 @@ int handle_move(int client, const char *path, char *header) {
     }
 
     // 检查目标文件是否已经存在
+#if defined(__UNIX__)
     if (access(dest, F_OK) == 0) {
+#elif defined(__NXOS__)
+    if (NX_FileAccess(dest, NX_FILE_READ_OK) == NX_EOK) {
+#endif
         send_response(client, "409 Conflict", "text/plain", "File conflict");
         return -1;
     }
 
+#if defined(__UNIX__)
     if (rename(path, dest) == 0) {
+#elif defined(__NXOS__)
+    if (NX_FileRename(path, dest) == NX_EOK) {
+#endif
         send_response(client, "200 OK", "text/plain", "Move file sucess");
     } else {
         send_response(client, "500 Internal Server Error", "text/plain", "Move file failed");
@@ -684,6 +995,7 @@ int handle_move(int client, const char *path, char *header) {
     return 0;
 }
 
+#if defined(__UNIX__)
 static int copy_file(const char *src, const char *dest, mode_t mode) {
     int src_fd = open(src, O_RDONLY);
     if (src_fd == -1) {
@@ -752,7 +1064,7 @@ int copy_directory(const char *src, const char *dest) {
             break;
         }
 
-        if (S_ISDIR(file_stat.st_mode)) {
+        if (IS_DIR(file_stat.st_mode)) {
             // 递归复制子目录
             if (copy_directory(src_path, dest_path) == -1) {
                 ret = -1;
@@ -793,7 +1105,7 @@ int handle_copy(int client, const char *path, char *header) {
         return -1;
     }
 
-    if (S_ISDIR(file_stat.st_mode)) {
+    if (IS_DIR(file_stat.st_mode)) {
         // 如果是目录，递归复制目录
         if (copy_directory(path, dest) == 0) {
             // 设置目标目录的权限
@@ -815,6 +1127,139 @@ int handle_copy(int client, const char *path, char *header) {
     }
     return 0;
 }
+#elif defined(__NXOS__)
+static int copy_file(const char *src, const char *dest, NX_U32 mode) {
+    int src_fd = NX_FileOpen(src, NX_FILE_RDONLY, mode);
+    if (src_fd == -1) {
+        return -1;
+    }
+
+    int dest_fd = NX_FileOpen(dest, NX_FILE_WRONLY | NX_FILE_CREAT | NX_FILE_TRUNC, mode);
+    if (dest_fd == -1) {
+        NX_FileClose(src_fd);
+        return -1;
+    }
+
+    char buffer[4096];
+    ssize_t bytes_read;
+    while ((bytes_read = NX_FileRead(src_fd, buffer, sizeof(buffer))) > 0) {
+        if (NX_FileWrite(dest_fd, buffer, bytes_read) != bytes_read) {
+            NX_FileClose(src_fd);
+            NX_FileClose(dest_fd);
+            return -1;
+        }
+    }
+
+    if (bytes_read == -1) {
+        NX_FileClose(src_fd);
+        NX_FileClose(dest_fd);
+        return -1;
+    }
+
+    NX_FileClose(src_fd);
+    NX_FileClose(dest_fd);
+    return 0;
+}
+
+// 递归复制目录
+int copy_directory(const char *src, const char *dest) {
+    NX_Solt dir;
+    NX_Dirent entry;
+    NX_FileStatInfo file_stat;
+    char src_path[512];
+    char dest_path[512];
+    int ret = 0;
+
+    // 打开源目录
+    dir = NX_DirOpen(src);
+    if (dir == NX_SOLT_INVALID_VALUE) {
+        return -1;
+    }
+
+    // 创建目标目录
+    if (NX_DirCreate(dest, 0755) != NX_EOK) {
+        NX_DirClose(dir);
+        return -1;
+    }
+
+    // 遍历目录中的所有文件和子目录
+    while ((NX_DirRead(dir, &entry)) == NX_EOK) {
+        if (strcmp(entry.name, ".") == 0 || strcmp(entry.name, "..") == 0) {
+            continue; // 跳过当前目录和上级目录
+        }
+
+        snprintf(src_path, sizeof(src_path), "%s/%s", src, entry.name);
+        snprintf(dest_path, sizeof(dest_path), "%s/%s", dest, entry.name);
+
+        if (NX_FileGetStatFromPath(src_path, &file_stat) != NX_EOK) {
+            ret = -1;
+            break;
+        }
+
+        if (IS_DIR(file_stat.mode)) {
+            // 递归复制子目录
+            if (copy_directory(src_path, dest_path) == -1) {
+                ret = -1;
+                break;
+            }
+        } else {
+            // 复制文件
+            if (copy_file(src_path, dest_path, file_stat.mode) == -1) {
+                ret = -1;
+                break;
+            }
+        }
+    }
+
+    NX_DirClose(dir);
+    return ret;
+}
+
+int handle_copy(int client, const char *path, char *header) {
+    
+    printf("Method: COPY %s\n", path);
+
+    char dest[256] = {0};
+    if (parse_dest_path(header, dest, sizeof(dest))) {
+        send_response(client, "400 Bad Request", "text/plain", "No file destination");
+        return -1;
+    }
+
+    // 检查目标文件是否已经存在
+    if (NX_FileAccess(dest, NX_FILE_READ_OK) == NX_EOK) {
+        send_response(client, "409 Conflict", "text/plain", "File conflict");
+        return -1;
+    }
+
+    NX_FileStatInfo file_stat;
+    if (NX_FileGetStatFromPath(path, &file_stat) != NX_EOK) {
+        send_response(client, "500 Internal Server Error", "text/plain", "Failed to stat source file");
+        return -1;
+    }
+
+    if (IS_DIR(file_stat.mode)) {
+        // 如果是目录，递归复制目录
+        if (copy_directory(path, dest) == 0) {
+            // 设置目标目录的权限
+            if (NX_FileSetModeToPath(dest, file_stat.mode) != NX_EOK) {
+                send_response(client, "500 Internal Server Error", "text/plain", "Failed to set directory permissions");
+                return -1;
+            }
+            send_response(client, "200 OK", "text/plain", "Directory copied successfully");
+        } else {
+            send_response(client, "500 Internal Server Error", "text/plain", "Failed to copy directory");
+        }
+    } else {
+        // 如果是文件，复制文件
+        if (copy_file(path, dest, file_stat.mode) == 0) {
+            send_response(client, "200 OK", "text/plain", "File copied successfully");
+        } else {
+            send_response(client, "500 Internal Server Error", "text/plain", "Failed to copy file");
+        }
+    }
+    return 0;
+}
+#endif
 
 int check_webdav(char *buf)
 {
@@ -870,7 +1315,14 @@ void accept_request(int client)
  char url[255];
  char path[512];
  size_t i, j;
+#if defined(__UNIX__)
  struct stat st;
+ mode_t mode;
+#elif defined(__NXOS__)
+ NX_FileStatInfo st;
+ NX_U32 mode;
+#endif
+
  int cgi = 0;      /* becomes true if server decides this is a CGI
                     * program */
  char *query_string = NULL;
@@ -987,7 +1439,11 @@ void accept_request(int client)
     }
 
  //在系统上去查询该文件是否存在
- if (stat(path, &st) == -1 && check_exist) {
+#if defined(__UNIX__)
+ if ((stat(path, &st) == -1) && check_exist) {
+#elif defined(__NXOS__)
+ if (NX_FileGetStatFromPath(path, &st) != NX_EOK && check_exist) {
+#endif
     // 检查是否有长度参数，如果有就读取剩余的，没有就不读取。
     char content_buf[16];
     if (!get_header_value(param, "Content-Length", content_buf, sizeof(content_buf))) {
@@ -1001,28 +1457,32 @@ void accept_request(int client)
  }
  else
  {
-    //文件存在，那去跟常量S_IFMT相与，相与之后的值可以用来判断该文件是什么类型的
-    //S_IFMT参读《TLPI》P281，与下面的三个常量一样是包含在<sys/stat.h>
-    if (!is_webdav && (st.st_mode & S_IFMT) == S_IFDIR) {
-        if (!enable_indexes) {
-            //如果这个文件是个目录，那就需要再在 path 后面拼接一个"/index.html"的字符串
-            if (path[strlen(path) - 1] != '/')
-                strcat(path, "/");
-            strcat(path, index_file);
-        } else {
-            // 如果使能索引了，就是浏览目录
-            show_dir = 1;
-            cgi = 1;
+#if defined(__UNIX__)
+    mode = st.st_mode;
+#elif defined(__NXOS__)
+    mode = st.mode;
+#endif
+    /* 不是webdav的情况下，检查是否为CGI */
+    if (!is_webdav) {
+        //文件存在，那去跟常量S_IFMT相与，相与之后的值可以用来判断该文件是什么类型的
+        //S_IFMT参读《TLPI》P281，与下面的三个常量一样是包含在<sys/stat.h>
+        if (IS_DIR(mode)) {
+            if (!enable_indexes) {
+                //如果这个文件是个目录，那就需要再在 path 后面拼接一个"/index.html"的字符串
+                if (path[strlen(path) - 1] != '/')
+                    strcat(path, "/");
+                strcat(path, index_file);
+            } else {
+                // 如果使能索引了，就是浏览目录
+                show_dir = 1;
+                cgi = 1;
+            }
+        } else if (IS_EXEC(mode)) {
+            //S_IXUSR, S_IXGRP, S_IXOTH三者可以参读《TLPI》P295
+            //如果这个文件是一个可执行文件，不论是属于用户/组/其他这三者类型的，就将 cgi 标志变量置一
+            // TODO: cgi = 1;
         }
     }
-   
-   //S_IXUSR, S_IXGRP, S_IXOTH三者可以参读《TLPI》P295
-  if (((st.st_mode & S_IXUSR) ||       
-      (st.st_mode & S_IXGRP) ||
-      (st.st_mode & S_IXOTH)) && (!is_webdav)) {
-        cgi = 1;
-    //如果这个文件是一个可执行文件，不论是属于用户/组/其他这三者类型的，就将 cgi 标志变量置一
-  }
 
   if (strcasecmp(method, "GET") == 0 || strcasecmp(method, "POST") == 0) {
     // GET方法可能有参数，就是CGI，没有就是普通的文件返回。POST一定是有CGI的。
@@ -1037,7 +1497,7 @@ void accept_request(int client)
             char query_param[256+64];
             snprintf(query_param, sizeof(query_param), "port=%d&prefix=%s&url=%s",
                 server_port, prefix_dir, url);
-            execute_cgi(client, "./showdir.py", method, query_param, param);
+            execute_cgi(client, showdir_cgi, method, query_param, param);
         }
     }
   } else if (strcasecmp(method, "PUT") == 0) {
@@ -1056,9 +1516,9 @@ void accept_request(int client)
     handle_options(client);
   }
  }
- // disconnect first
-  shutdown(client, SHUT_RDWR);
- close(client);
+ // disconnect first, make sure response send done
+  shutdown(client, SHUT_WR);
+ sock_close(client);
 }
 
 /**********************************************************************/
@@ -1088,6 +1548,7 @@ void bad_request(int client)
  * Parameters: the client socket descriptor
  *             FILE pointer for the file to cat */
 /**********************************************************************/
+#if defined(__UNIX__)
 void cat(int client, FILE *resource)
 {
     char buf[1024];
@@ -1098,7 +1559,18 @@ void cat(int client, FILE *resource)
         send(client, buf, bytes_read, 0);
     }
 }
+#elif defined(__NXOS__)
+void cat(int client, NX_Solt resource)
+{
+    char buf[2048];
+    size_t bytes_read;
 
+    // 从文件中读取指定内容
+    while ((bytes_read = NX_FileRead(resource, buf, sizeof(buf))) > 0) {
+        send(client, buf, bytes_read, 0);
+    }
+}
+#endif
 /**********************************************************************/
 /* Inform the client that a CGI script could not be executed.
  * Parameter: the client socket descriptor. */
@@ -1139,10 +1611,6 @@ void execute_cgi(int client, const char *path,
                  const char *method, const char *query_string, char *header)
 {
  char buf[32];
- int cgi_output[2];
- int cgi_input[2];
- pid_t pid;
- int status;
  int i;
  char c;
  int content_length = -1;
@@ -1164,6 +1632,12 @@ void execute_cgi(int client, const char *path,
         }
     }
 
+#if defined(__UNIX__)
+ int cgi_output[2];
+ int cgi_input[2];
+ pid_t pid;
+ int status;
+ 
  sprintf(buf, "HTTP/1.0 200 OK\r\n");
  send(client, buf, strlen(buf), 0);
 
@@ -1206,11 +1680,15 @@ void execute_cgi(int client, const char *path,
   putenv(meth_env);
   
   //根据http 请求的不同方法，构造并存储不同的环境变量
-  if (strcasecmp(method, "GET") == 0 && query_string[0] != '\0') {
-   sprintf(query_env, "QUERY_STRING=%s", query_string);
+  if (strcasecmp(method, "GET") == 0) {
+   if (query_string[0] != '\0') {
+     sprintf(query_env, "QUERY_STRING=%s", query_string);
+   } else {
+     sprintf(query_env, "QUERY_STRING=");
+   }
    putenv(query_env);
   }
-  else {   /* POST */
+  else if (strcasecmp(method, "POST") == 0) {   /* POST */
    sprintf(length_env, "CONTENT_LENGTH=%d", content_length);
    putenv(length_env);
   }
@@ -1251,6 +1729,90 @@ void execute_cgi(int client, const char *path,
   //等待子进程的退出
   waitpid(pid, &status, 0);
  }
+#elif defined(__NXOS__)
+  /* 创建一个双向管道 */
+  NX_Solt pipe, child;
+  char env[256];
+  char *env_array[16];
+  char meth_env[32];
+  char length_env[32];
+  int env_idx = 0;
+  char query_env[255];
+
+  /* 给子进程传入环境变量 */
+  sprintf(meth_env, "REQUEST_METHOD=%s", method);
+  env_array[env_idx++] = meth_env;
+
+  if (strcasecmp(method, "GET") == 0) {
+   if (query_string[0] != '\0') {
+     sprintf(query_env, "QUERY_STRING=%s", query_string);
+   } else {
+     sprintf(query_env, "QUERY_STRING=");
+   }
+   env_array[env_idx++] = query_env;
+  }
+  else if (strcasecmp(method, "POST") == 0) {   /* POST */
+   sprintf(length_env, "CONTENT_LENGTH=%d", content_length);
+   env_array[env_idx++] = length_env;
+  }
+  env_array[env_idx] = NX_NULL; // endof env
+
+  NX_EnvToBuf(env, sizeof(env), env_array);
+
+  pipe = NX_PipeCreate(NX_NULL, 4096, NX_PIPE_SEND | NX_PIPE_RECV);
+
+  if (pipe == NX_SOLT_INVALID_VALUE)
+  {
+      NX_Printf("pipe create failed!\n");
+      send_response(client, "500 Internal Server Error", "text/plain", "Create pipe failed");
+      return;
+  }
+
+  /* 创建一个子进程，并重定向管道到标准输入输出 */
+  child = NX_ProcessLaunch((char *)path, NX_THREAD_CREATE_SUSPEND, NX_NULL, (char *)path, env);
+  if (child == NX_SOLT_INVALID_VALUE)
+  {
+      NX_SoltClose(pipe);
+      send_response(client, "500 Internal Server Error", "text/plain", "Invalid CGI file");
+      return;
+  }
+
+ sprintf(buf, "HTTP/1.0 200 OK\r\n");
+ send(client, buf, strlen(buf), 0);
+
+  /* 重定向管道 */
+  NX_Solt newPipeSolt = NX_SoltCopyTo(child, pipe, 0);
+  if (newPipeSolt != 0)
+    abort();
+  newPipeSolt = NX_SoltCopyTo(child, pipe, 1);
+  if (newPipeSolt != 1)
+    abort();
+  
+  NX_ThreadResume(child);
+
+  /* 如果是父进程，把数据写入管道 */
+  if (strcasecmp(method, "POST") == 0)
+   for (i = 0; i < content_length; i++) {
+    NET_Recv(client, &c, 1, 0);
+    NX_FileWrite(pipe, &c, 1);
+  }
+
+    char pipebuf[2048];
+    //然后从 cgi_output 管道中读子进程的输出，并发送到客户端去
+    ssize_t bytes_read;
+    while ((bytes_read = NX_FileRead(pipe, pipebuf, sizeof(pipebuf) - 1)) > 0) {
+        if (send(client, pipebuf, bytes_read, 0) <= 0) {
+            printf("err: send pipe buf failed on client %d!\n", client);
+            break;
+        }
+    }
+  
+  /* 关闭管道 */
+  NX_SoltClose(pipe);
+
+  /* 等待子进程退出 */
+  NX_ThreadWait(child, NX_NULL);
+#endif
 }
 
 /**********************************************************************/
@@ -1359,6 +1921,7 @@ void not_found(int client)
 /**********************************************************************/
 void serve_file(int client, const char *filename)
 {
+#if defined(__UNIX__)
  FILE *resource = NULL;
 
   printf("Method: GET %s\n", filename);
@@ -1376,6 +1939,25 @@ void serve_file(int client, const char *filename)
  }
  
  fclose(resource);
+#elif defined(__NXOS__)
+ NX_Solt resource;
+
+  printf("Method: GET %s\n", filename);
+
+ //打开这个传进来的这个路径所指的文件
+ resource = NX_FileOpen(filename, NX_FILE_RDONLY, 0);
+ if (resource == NX_SOLT_INVALID_VALUE)
+  not_found(client);
+ else
+ {
+  //打开成功后，将这个文件的基本信息封装成 response 的头部(header)并返回
+  headers(client, filename);
+  //接着把这个文件的内容读出来作为 response 的 body 发送到客户端
+  cat(client, resource);
+ }
+ 
+ NX_FileClose(resource);
+#endif
 }
 
 /**********************************************************************/
@@ -1386,7 +1968,7 @@ void serve_file(int client, const char *filename)
  * Parameters: pointer to variable containing the port to connect on
  * Returns: the socket */
 /**********************************************************************/
-int startup(u_short *port)
+int startup(unsigned short *port)
 {
  int httpd = 0;
  //sockaddr_in 是 IPV4的套接字地址结构。定义在<netinet/in.h>,参读《TLPI》P1202
@@ -1411,7 +1993,8 @@ int startup(u_short *port)
  //如果传进去的sockaddr结构中的 sin_port 指定为0，这时系统会选择一个临时的端口号
  if (bind(httpd, (struct sockaddr *)&name, sizeof(name)) < 0)
   error_die("bind");
-  
+
+#if USE_AUTO_PORT == 1
  //如果调用 bind 后端口号仍然是0，则手动调用getsockname()获取端口号
  if (*port == 0)  /* if dynamically allocating a port */
  {
@@ -1422,7 +2005,8 @@ int startup(u_short *port)
    error_die("getsockname");
   *port = ntohs(name.sin_port);
  }
- 
+#endif
+
  //最初的 BSD socket 实现中，backlog 的上限是5.参读《TLPI》P1156
  if (listen(httpd, 5) < 0) 
   error_die("listen");
@@ -1466,34 +2050,52 @@ void handle_term(int signo)
 
   // close sock before exit
   shutdown(server_sock, SHUT_RDWR);
-  close(server_sock);
+  sock_close(server_sock);
   exit(0);
 }
 
+#if USE_PIPE_SIGNAL == 1
 void handle_sigpipe(int signo)
 {
   printf("err: sigpipe %d happend!\n", signo);
 }
+#endif
 
 #if USE_MULTI_THREAD_REQUEST == 1
+#if defined(__UNIX__)
 void *accept_request_thread(void *arg)
 {
     accept_request((long)arg);
     return NULL;
 }
+#elif defined(__NXOS__)
+NX_U32 accept_request_thread(void *arg)
+{
+    accept_request((long)arg);
+    return 0;
+}
+#endif
 #endif
 
 int main(int argc, char *argv[])
 {
+#if USE_CMD_PORT == 1
  int opt;
+#endif
+
  long client_sock = -1;
  //sockaddr_in 是 IPV4的套接字地址结构。定义在<netinet/in.h>,参读《TLPI》P1202
  struct sockaddr_in client_name;
  socklen_t client_name_len = sizeof(client_name);
 #if USE_MULTI_THREAD_REQUEST == 1
+ #if defined(__UNIX__)
  pthread_t newthread;
+ #elif defined(__NXOS__)
+ NX_Solt newthread;
+ #endif
 #endif
 
+#if USE_CMD_PORT == 1
     // 解析命令行参数
     while ((opt = getopt(argc, argv, "p:")) != -1) {
         switch (opt) {
@@ -1509,13 +2111,17 @@ int main(int argc, char *argv[])
                 exit(EXIT_FAILURE);
         }
     }
+#endif
 
  server_sock = startup(&server_port);
  printf("httpd running on port %d\n", server_port);
 
   signal(SIGTERM, handle_term);
   signal(SIGINT, handle_term);
+
+#if USE_PIPE_SIGNAL == 1
   signal(SIGPIPE, handle_sigpipe);
+#endif
 
  while (1)
  {
@@ -1526,15 +2132,23 @@ int main(int argc, char *argv[])
   if (client_sock == -1)
    error_die("accept");
 #if USE_MULTI_THREAD_REQUEST == 1
+ #if defined(__UNIX__)
   if (pthread_create(&newthread , NULL, accept_request_thread, (void *)client_sock) != 0)
    perror("pthread_create");
+ #elif defined(__NXOS__)
+  NX_ThreadAttr attr;
+  NX_ThreadAttrInit(&attr, 16 * 1024, NX_THREAD_PRIORITY_NORMAL);
+  newthread = NX_ThreadCreate(&attr, accept_request_thread, (void *)client_sock, 0);
+  if (newthread == NX_SOLT_INVALID_VALUE)
+   perror("pthread_create");
+ #endif
 //   printf("info: create thread %ld to handle request client %ld\n", newthread, client_sock);
 #else
   accept_request(client_sock);
 #endif
  }
 
- close(server_sock);
+ sock_close(server_sock);
 
  return(0);
 }

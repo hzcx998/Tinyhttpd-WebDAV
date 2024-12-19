@@ -1,0 +1,10 @@
+all: httpd showdir
+
+httpd: httpd.c showdir
+	gcc -W -Wall -lpthread -o httpd httpd.c -D__UNIX__
+
+showdir: showdir.c
+	gcc -W -Wall -I./ -o showdir showdir.c cgic.c
+
+clean:
+	rm httpd showdir
