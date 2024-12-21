@@ -1,4 +1,4 @@
-X_INCDIRS	+= Tinyhttpd-WebDAV/cgi
+X_INCDIRS	+= WebDAV/cgi
 X_LIBS		+= libxlibc.a libnetc.a
 X_CFLAGS	+= -D__NXOS__
 
