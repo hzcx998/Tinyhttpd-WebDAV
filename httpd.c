@@ -73,44 +73,6 @@
 #define IS_DIR(mode) NX_FILE_IS_DIR(mode)
 #define IS_EXEC(mode) ((mode) & NX_FILE_MODE_EXEC)
 
-/* Flags we can use with send and recv. */
-#define MSG_PEEK       0x01    /* Peeks at an incoming message */
-#define MSG_WAITALL    0x02    /* Unimplemented: Requests that the function block until the full amount of data requested can be returned */
-#define MSG_OOB        0x04    /* Unimplemented: Requests out-of-band data. The significance and semantics of out-of-band data are protocol-specific */
-#define MSG_DONTWAIT   0x08    /* Nonblocking i/o for this operation only */
-#define MSG_MORE       0x10    /* Sender will send more */
-#define MSG_NOSIGNAL   0x20    /* Uninmplemented: Requests not to send the SIGPIPE signal if an attempt to send is made on a stream-oriented socket that is no longer connected. */
-
-#define PF_INET         AF_INET
-#define PF_INET6        AF_INET6
-#define PF_UNSPEC       AF_UNSPEC
-
-#define ENDIAN_CONVERTER_LONGLONG(n)    ((((n) & 0xFF) << 56) | (((n) & 0xFF00) << 40) | (((n) & 0xFF0000) << 24) | (((n) & 0xFF000000) << 8) | (((n) & 0xFF00000000) >> 8) | (((n) & 0xFF0000000000) >> 24) | (((n) & 0xFF000000000000) >> 40) | (((n) & 0xFF00000000000000) >> 56))
-#define ENDIAN_CONVERTER_UINT(n)        ((((n) & 0xFF) << 24) | (((n) & 0xFF00) << 8) | (((n) & 0xFF0000) >> 8) | (((n) & 0xFF000000) >> 24))
-#define ENDIAN_CONVERTER_USHORT(n)	    ((((n) & 0xFF) << 8)  | (((n) & 0xFF00) >> 8))
-#define htonll(n)   ENDIAN_CONVERTER_LONGLONG(n) 
-#define htonl(n)    ENDIAN_CONVERTER_UINT(n)
-#define htons(n)    ENDIAN_CONVERTER_USHORT(n)
-
-
-/** 255.255.255.255 */
-#define IPADDR_NONE         ((u32_t)0xffffffffUL)
-/** 127.0.0.1 */
-#define IPADDR_LOOPBACK     ((u32_t)0x7f000001UL)
-/** 0.0.0.0 */
-#define IPADDR_ANY          ((u32_t)0x00000000UL)
-/** 255.255.255.255 */
-#define IPADDR_BROADCAST    ((u32_t)0xffffffffUL)
-
-/** 255.255.255.255 */
-#define INADDR_NONE         IPADDR_NONE
-/** 127.0.0.1 */
-#define INADDR_LOOPBACK     IPADDR_LOOPBACK
-/** 0.0.0.0 */
-#define INADDR_ANY          IPADDR_ANY
-/** 255.255.255.255 */
-#define INADDR_BROADCAST    IPADDR_BROADCAST
-
 /* config */
 // 使用多线程处理请求，当需要大量服务时可以考虑开启,0/1
 #define USE_MULTI_THREAD_REQUEST 0
