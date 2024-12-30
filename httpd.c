@@ -2095,7 +2095,7 @@ int main(int argc, char *argv[])
   client_sock = accept(server_sock,
                        (struct sockaddr *)&client_name,
                        &client_name_len);
-  if (client_sock == -1)
+  if (client_sock <= 0)
    error_die("accept");
 #if USE_MULTI_THREAD_REQUEST == 1
  #if defined(__UNIX__)
